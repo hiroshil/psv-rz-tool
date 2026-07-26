@@ -1,8 +1,8 @@
-# PCSG00933 engine analysis for rz-tool 1.0.0
+# PCSG00933 engine analysis for rz-tool 1.0.1
 
 ## 1. Purpose and claim boundary
 
-This report is the single authoritative analysis document for `rz-tool 1.0.0`.
+This report is the single authoritative analysis document for `rz-tool 1.0.1`.
 It consolidates the resource-registry, CPK/ITOC, image-package, texture, script,
 font and executable-patch findings used by the implementation.
 
@@ -542,7 +542,18 @@ dialogue record. The corpus contains 20,686 primary markers and 37,125 pages:
 7,927 one-page dialogues, 9,079 two-page dialogues and 3,680 three-page
 dialogues. No observed dialogue has more than three pages. Continuation parsing
 accepts only an immediately following glyph-only run terminated by another
-`FFFE`; a glyph run followed by `FFFF` or another control remains raw data.
+`FFFE`. `FFFF`-terminated glyph runs are handled separately: proven secondary,
+`FF42`, and `FF8C` grammars become typed text records, while a remaining run of
+three or more glyphs causes extraction to fail rather than becoming silent raw
+state.
+
+Extraction is fail-closed. The parser records every `FFFE` position in the
+compiled word stream and requires a one-to-one match with parsed page endings.
+A residual terminator indicates that text-bearing grammar remains outside the
+recognized dialogue model, so extraction aborts rather than hiding those words
+inside a raw node. The generated relocatable IR is then assembled immediately
+and must reproduce the original word stream and secondary relocation records
+exactly before an editable project is accepted.
 
 This distinction explains the previously missing opening line. In engine entry
 86, marker 1 contains the first page `……レム、レム。`, followed by the pages
@@ -569,19 +580,37 @@ second operand as the next local stream ID; the loader later passes that entry
 ID to `FUN_81053cb6`. Choices and flags produce a branching directed graph, not
 a single chronological file sequence.
 
-The project contract consequently keeps two independent values:
+The project contract consequently keeps three independent values:
 
-- `id`: engine-visible ITOC ID and SC filename prefix;
-- `order`: CPK iteration/emission order retained for archive reconstruction.
+- `entry_id`: engine-visible ITOC ID used unchanged by the VM and loader;
+- `order`: CPK iteration/emission order retained for archive reconstruction;
+- presentation position: the array position used by `scenario-dialogue.json`
+  and the navigation rank recorded by `scenario-routing.json`.
+
+No user-facing script filenames are required for normal extraction.
+`scenario-dialogue.json` is the authoritative editing document and lists entry
+86 first while preserving `entry_id: 86`. Build joins each edit to the exact
+internal dialogue by `(entry_id, marker_index)`, then sorts CPK output by the
+preserved archive `order`.
 
 `scenario-routing.json` records the proven root, the order/ID mapping and every
-`FFEF` word triple whose target entry and stream are valid. It is derived
-navigation metadata; build does not consume it and never renumbers engine IDs.
+`FFEF` word triple whose target entry and stream are valid. Presentation order is
+dependency-aware rather than depth-first. Every observed source is emitted
+before its target, and a shared convergence target is delayed until all observed
+predecessors have been emitted. Ties use first discovery and source opcode
+occurrence order. Disconnected components are appended by engine-ID root order.
+This produces a deterministic topological presentation while preserving the
+fact that the candidate graph is incomplete and does not define one universal
+playthrough chronology.
 
-The `nodes` array remains in physical payload order. Execution can begin at any
-`stream_XXXX` label and branch within or across entries, so sorting dialogue by
-filename, node index or `marker_index` would manufacture a false chronology.
-`marker_index` identifies the entry-local primary offset table only.
+The physical node order, relocation labels, raw VM words and engine metadata
+are machine-managed rebuild state in `.rz-internal/sc-state.json.gz`. Dialogue
+Unicode and complete dialogue glyph vectors are not stored there;
+`scenario-dialogue.json` is the sole text source. The state bundle stores only
+sparse glyph-alias deltas for source IDs that differ from canonical
+`charset.json` encoding, plus structural data that cannot be derived from text.
+Human-readable per-entry copies are emitted only with `--debug-script-ir`, under
+`debug/scenario-ir/`; build does not consume those copies.
 
 ### 10.8 Primary marker table
 
@@ -597,32 +626,143 @@ fff0 0002
 The assembler derives the table after emitting the new payload. It does not copy
 stale offsets from extraction.
 
-### 10.9 Secondary records
+### 10.9 Secondary records and secondary-target strings
 
 The corpus contains 47 records of seven `u32` words, 329 fields total:
 
-- 119 fields are even in-payload addresses targeting valid boundaries/content;
+- 119 fields are even in-payload addresses targeting valid boundaries;
 - 210 fields are zero or small immediate values;
-- no located address splits a recognized dialogue span.
+- no located address splits a primary dialogue span.
 
-Address fields become symbolic labels in machine-managed metadata and are
-resolved after editable nodes are emitted. Higher-level field names remain
-unknown.
+All 119 address targets begin with one or more glyph IDs below `0x0e12` and end
+with `FFFF`. The target may have additional non-text words after the terminator. Those
+words belong to a typed machine suffix; their numeric values are not interpreted
+as glyph IDs merely because they are below `0x0e12`. The stable grammar is:
 
-### 10.10 Relocatable source-equivalent IR
+```text
+secondary record address
+→ glyph* FFFF
+→ preserved target suffix
+```
+
+These strings include user-visible selection labels such as
+`エミリアの質問に真面目に答える`. Treating the target as an opaque raw node
+would preserve bytes but hide editable text. The parser therefore emits a
+`secondary-string` record in `scenario-dialogue.json`, retains only any sparse
+non-canonical glyph-alias positions plus the suffix in machine state, and
+resolves the secondary address label after text reassembly.
+
+A concrete boundary case occurs in entry 17, text record 6. The editable text is
+`キスといえば口`; its preserved suffix is:
+
+```text
+0004 0019 000e ffff
+```
+
+The first three values fall inside the glyph-ID numeric range and would decode
+to the implausible sequence `．〆¨`, but they are machine operands, not another
+string. Consequently, the runtime parser does not classify either standalone raw
+words or a typed secondary suffix as text from this numerical pattern alone.
+An `FFFE` inside such a suffix remains a hard error because it would overlap the
+separately proven dialogue-page grammar. Higher-level semantic names for the
+seven fields remain unknown; only the address classification, leading target
+string and opaque suffix ownership are claimed.
+
+### 10.10 Editable text and internal relocatable state
 
 The original compiler input is not recoverable: comments, macros, identifier
-names and source syntax are absent. `rz-tool` emits the strongest lossless
-substitute:
+names and source syntax are absent. The stable project separates the concise
+text-editing model from the source-equivalent rebuild model.
 
-- stream labels;
-- typed Unicode dialogue nodes with ordered `FFFE` pages;
-- original glyph-ID vectors for byte-exact preservation of charset aliases;
-- exact raw `u16` nodes;
-- symbolic labels for all engine-consumed payload addresses;
-- machine-managed secondary relocation records.
+Each entry in `scenario-dialogue.json` contains:
 
-A dialogue node assembles as:
+- engine `entry_id`;
+- `dialogues`, keyed by ordered primary `marker_index`, with editable `speaker`
+  and page strings;
+- `texts`, keyed by `text_index`, with a fixed grammar tag and editable `text`.
+
+The proven non-dialogue grammar tags are:
+
+- `secondary-string`: glyph string reached through a classified secondary
+  payload address;
+- `inline-ff42`: glyph string immediately following opcode `FF42`;
+- `inline-ff8c`: glyph string immediately following opcode `FF8C`.
+
+The interpreter evidence for the two inline forms is direct. `FUN_81017544`
+handles `FF42`, passes `PC + 2` to `FUN_81006b8a`, and advances the VM pointer by
+`length * 2 + 4`. `FUN_810174aa`, dispatched by `FF8C`, performs the equivalent
+operation through `FUN_81006b0e`. `FUN_8104e182` and `FUN_8104e0c4` scan `short`
+values until `-1` (`FFFF`), proving the terminator. Their display buffers accept
+at most 21 and 7 glyphs respectively; build rejects edits beyond those limits
+rather than allowing engine-side truncation.
+
+The supplied corpus contains:
+
+```text
+20,686 primary dialogues
+37,125 dialogue pages
+119 secondary-string records
+1 inline-ff42 record
+1 inline-ff8c record
+```
+
+The inline strings are `これはコメントです` (`FF42`) and `ぶりっじ`
+(`FF8C`) in entry 87. They are extracted because their opcode-width and
+terminator behavior are proven; other low-valued operands are not guessed to be
+text.
+
+A broad post-classification scan of every raw node finds no `FFFF`-terminated
+run of three or more glyph IDs. One two-value run remains in entry 87 and would
+decode as `。、` if the values were treated as glyph IDs. Its surrounding words
+are:
+
+```text
+ffde 0000 3000 0002 0001 ffff
+```
+
+This is not text. `FUN_8100b2ac`, the interpreter handler for `FFDE`, calls
+`FUN_8100b134` on the operands following the opcode. `FUN_8100b134` interprets
+`3000`, `0002`, and `0001` as a variable selector, comparison operator, and
+comparison value, with `FFFF` terminating the expression. The raw sequence is
+therefore retained as command data.
+
+It is not a general rule that three low-valued words followed by `FFFF` form
+text: both command operands and typed secondary suffixes demonstrate the
+contrary. Proven anchors (`FFF0`/`FFFE`, secondary relocation targets, `FF42`,
+and `FF8C`) and byte-exact reassembly are the authoritative runtime grammar
+checks. A numerical scan for additional glyph-range candidates remains in the
+offline corpus validator as a review aid, but it does not reject extraction.
+
+`.rz-internal/sc-state.json.gz` is the single machine-managed bundle required to
+rebuild. It retains:
+
+- stream labels and physical node order;
+- sparse glyph-alias deltas only where a source ID differs from canonical
+  `charset.json` encoding;
+- exact raw `u16` command/data nodes;
+- typed text-node prefix/suffix words;
+- symbolic labels for engine-consumed payload addresses;
+- secondary relocation records, allocation data and the opaque footer.
+
+It does not retain Unicode dialogue strings or complete source glyph vectors.
+Those are reconstructed from `scenario-dialogue.json` and `charset.json` during
+build.
+
+For the supplied corpus, the user document contains 599,524 text glyphs. Only
+5,995 positions use a non-canonical alias (the alternate long-vowel glyph). The
+previous duplicated state bundle was 1,881,611 bytes compressed; the structural
+bundle without duplicated text is 224,948 bytes compressed while hydrating back
+to the exact original source-node glyph sequences.
+
+Default extraction does not emit per-entry IR/state documents. With
+`--debug-script-ir`, diagnostic copies are written to `debug/scenario-ir/`; they
+are never build inputs.
+
+Build overlays the user document by `(entry_id, marker_index)` for dialogues and
+`(entry_id, text_index)` for non-dialogue strings. Missing, duplicate, unknown
+or grammar-mutated records are rejected. Non-dialogue records must remain
+non-empty because all three proven grammars contain `glyph+ FFFF`, not an empty
+string form. A dialogue assembles as:
 
 ```text
 fff0 marker_index
@@ -636,12 +776,25 @@ fffe]
 fffe]
 ```
 
-Unchanged speaker/page spans reuse their original glyph IDs when those IDs still
-decode to the visible Unicode. This preserves duplicate charset aliases such as
-the two IDs mapped to `ー`; edited spans are encoded through the selected
-charset. Variable-length edits are supported because stream, primary and
-classified secondary addresses are regenerated rather than patched at old
-offsets.
+A typed non-dialogue string reassembles as its preserved opcode/target prefix,
+encoded glyphs, `FFFF`, and preserved suffix. Canonical glyph IDs are generated
+from the user text; sparse source aliases are reapplied only when the stored
+alias still decodes to the character at that position. This keeps genuine
+charset aliases byte-identical without duplicating the full text in machine
+state. Variable-length edits and page-count changes are supported because
+stream, primary and classified secondary addresses are regenerated.
+
+Extraction fails unless all three engine-anchored coverage conditions hold:
+
+1. every `FFFE` belongs to exactly one parsed dialogue page;
+2. no secondary-target string or proven `FF42`/`FF8C` string remains in a raw
+   node;
+3. the generated source IR reproduces the original payload words and secondary
+   relocation records exactly.
+
+A glyph-range run followed by `FFFF` is not a runtime grammar by itself because
+VM operands share the same numeric range. Such runs remain an offline audit
+signal only.
 
 ### 10.11 Allocation tail
 

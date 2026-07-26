@@ -2179,6 +2179,7 @@ fn append_encoded_chunk(
     Ok(())
 }
 
+#[cfg(test)]
 fn build_chunk_table(
     profile: EnginePackageProfile,
     decoded: &[u8],

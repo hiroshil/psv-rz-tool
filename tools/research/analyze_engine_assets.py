@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproducible reverse-engineering evidence for rz-tool 1.0.0.
+"""Reproducible reverse-engineering evidence for rz-tool 1.0.1.
 
 The report is generated only from PCSG00933 eboot.bin.elf and mapper.json.
 It deliberately separates directly observed instructions/static data from the

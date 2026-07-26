@@ -1,61 +1,45 @@
 {
   "source": {
-    "workspace_version": "1.0.0",
+    "workspace_version": "1.0.1",
     "schema": 1,
     "engine_package_document_version": 1,
     "script_meta_version": 1,
-    "script_editable_version": 1,
-    "scenario_routing_version": 1,
+    "script_internal_ir_version": 1,
+    "scenario_dialogue_version": 1,
+    "scenario_routing_version": 2,
+    "scenario_state_bundle_version": 2,
     "glyphs": 3602
   },
   "script_corpus": {
     "entries": 89,
-    "json_files_per_entry": 2,
-    "dialogue_nodes": 20686,
-    "dialogue_pages": 37125,
-    "page_histogram": {
-      "1": 7927,
-      "2": 9079,
-      "3": 3680
+    "dialogues": 20686,
+    "pages": 37125,
+    "additional_text_records": 121,
+    "text_grammars": {
+      "secondary-string": 119,
+      "inline-ff42": 1,
+      "inline-ff8c": 1
     },
-    "raw_nodes": 21481,
-    "secondary_payload_labels": 119,
-    "range_validated_ffef_route_candidates": 94,
-    "startup_entry": {
-      "entry_id": 86,
-      "stream_id": 0,
-      "evidence": "new-game initialization at 0x8101AD94 calls FUN_8101BEC6 with r0=0x56 and r3=0"
+    "sparse_glyph_aliases": 5995,
+    "state_contains_duplicate_text": false,
+    "state_bundle_bytes": 224948,
+    "dialogue_document_bytes": 4658919,
+    "residual_fffe_in_raw_nodes": 0,
+    "residual_secondary_strings_in_raw_nodes": 0,
+    "residual_ff42_ff8c_strings_in_raw_nodes": 0,
+    "residual_unclassified_strings_3plus_glyphs": 0,
+    "two_glyph_raw_sequences": {
+      "count": 1,
+      "classification": "entry 87 FFDE comparison-expression operands, not text"
     },
     "opening_line_recovered": true,
-    "external_skeletons": 0,
-    "samples": [
-      {
-        "entry": 0,
-        "marker": 0,
-        "speaker": "スバル",
-        "pages": [
-          "レ、レム……すまん、あとは、任せ、る……。"
-        ]
-      },
-      {
-        "entry": 1,
-        "marker": 0,
-        "speaker": "スバル",
-        "pages": [
-          "……。"
-        ]
-      },
-      {
-        "entry": 2,
-        "marker": 0,
-        "speaker": "",
-        "pages": [
-          "本当はフェルトに挨拶すべきだったのだが、",
-          "疲れ果てていた俺はそれを断念。",
-          "部屋に戻るのだった。"
-        ]
-      }
-    ]
+    "choice_text_recovered": true,
+    "inline_ff42_recovered": true,
+    "inline_ff8c_recovered": true,
+    "secondary_machine_suffix_false_positive_guard": true,
+    "default_debug_directory_present": false,
+    "machine_state_files": 1,
+    "dialogue_document": "scenario-dialogue.json"
   },
   "elf": {
     "ADDPT_SECTORS": 1,

@@ -1057,10 +1057,6 @@ fn encode_bc3_seeded(pixels: &[[u8; 4]; 16], source: Option<&[u8]>) -> [u8; 16] 
     output
 }
 
-fn encode_color_block(pixels: &[[u8; 4]; 16]) -> [u8; 8] {
-    encode_color_block_seeded(pixels, None)
-}
-
 fn encode_color_block_seeded(pixels: &[[u8; 4]; 16], source: Option<&[u8]>) -> [u8; 8] {
     let source_endpoints = source.and_then(|bytes| {
         (bytes.len() >= 4).then(|| {

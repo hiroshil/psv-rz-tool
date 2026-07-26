@@ -44,9 +44,12 @@ fn extract_command(arguments: &[String]) -> Result<(), Box<dyn std::error::Error
     if positional.len() != 2 {
         return Err("extract requires <input.cpk|lt.bin|pr.bin> <project-directory>".into());
     }
-    reject_unknown_flags(arguments, &["--raw-only"])?;
+    reject_unknown_flags(arguments, &["--raw-only", "--debug-script-ir"])?;
     let options = ExtractOptions {
         raw_only: arguments.iter().any(|argument| argument == "--raw-only"),
+        debug_script_ir: arguments
+            .iter()
+            .any(|argument| argument == "--debug-script-ir"),
     };
     let report = extract_project(Path::new(positional[0]), Path::new(positional[1]), options)?;
     println!(
@@ -130,6 +133,7 @@ fn print_usage() {
 
 Usage:
   rz-tool extract <input.cpk|lt.bin> <project-directory>
+  rz-tool extract <sc.cpk> <project-directory> --debug-script-ir
   rz-tool extract <input.cpk|lt.bin|pr.bin> <project-directory> --raw-only
   rz-tool build <project-directory> <output.cpk|lt.bin|pr.bin>
   rz-tool build <sc-project> <output.cpk> [--charset-map <charset.json>]
@@ -137,15 +141,19 @@ Usage:
 
 Editable mode understands the engine image-package grammar used by
 addpt/bk/bsf/pt, compiled scene-script payloads in sc.cpk, and the lt.bin 4-bpp
-glyph bank. Every SC entry is exactly two JSON files: an editable relocatable
-source IR (`NNNNN.script.json`) and machine-managed rebuild metadata
-(`NNNNN.script-meta.json`). Extracted CPK assets are written into one
-flat project directory with stable entry/package prefixes such as
-00000-000.png. Editable projects contain no *skeleton.bin files; image package
-fields whose producer semantics remain unproven are preserved explicitly in
-package.json. Image edits are encoded in the original GPU layout: unchanged BC blocks and
-GZIP chunks remain byte-identical, changed BC blocks are source-seeded and
-verified after decode, and P4/P8 palettes are rebuilt automatically.
+glyph bank. For sc.cpk, scenario-dialogue.json is the sole user-editable text
+document; it contains primary dialogue pages plus proven secondary-target and
+FF42/FF8C inline strings. scenario-routing.json is the read-only route report.
+Rebuild state is stored as one compressed .rz-internal/sc-state.json.gz bundle.
+Pass --debug-script-ir only when human-readable per-entry IR/state copies are
+needed under debug/scenario-ir.
+Extracted image CPK assets are written into one flat project directory with
+stable entry/package prefixes such as 00000-000.png. Editable projects contain
+no *skeleton.bin files; image package fields whose producer semantics remain
+unproven are preserved explicitly in package.json. Image edits are encoded in
+the original GPU layout: unchanged BC blocks and GZIP chunks remain
+byte-identical, changed BC blocks are source-seeded and verified after decode,
+and P4/P8 palettes are rebuilt automatically.
 pr.bin is accepted only with --raw-only because the engine uses
 multiple incompatible slot grammars that are not all encoded yet. Audio/video
 is rejected. Raw bytes are written only with explicit --raw-only."#

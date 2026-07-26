@@ -22,6 +22,7 @@ use crate::manifest::{
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ExtractOptions {
     pub raw_only: bool,
+    pub debug_script_ir: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -171,10 +172,23 @@ where
         ProjectMode::Editable
     };
     let is_sc = archive_name.eq_ignore_ascii_case("sc.cpk");
+    if options.debug_script_ir && (!is_sc || options.raw_only) {
+        return Err(AssetError::InvalidProject(
+            "--debug-script-ir is available only for editable sc.cpk extraction".to_owned(),
+        ));
+    }
     let mut sc_ids = BTreeSet::new();
     let mut assets = Vec::with_capacity(files.len());
+    let mut processing_order = (0..files.len()).collect::<Vec<_>>();
+    if is_sc {
+        // Deterministic project presentation follows engine-visible IDs. The
+        // original CPK position is still stored in AssetEntry::order and is
+        // restored by the build pipeline before archive emission.
+        processing_order.sort_by_key(|index| files[*index].id().unwrap_or(u32::MAX));
+    }
 
-    for (index, file) in files.iter().enumerate() {
+    for index in processing_order {
+        let file = &files[index];
         let extracted = reader.extract_file(file).map_err(AssetError::Archive)?;
         let order = u32::try_from(index)
             .map_err(|_| AssetError::InvalidProject("too many CPK entries".to_owned()))?;
@@ -208,10 +222,11 @@ where
             fs::write(target, extracted)?;
             AssetKind::Raw { path: relative }
         } else {
-            // All editable assets live in the project root. SC filenames use
-            // the engine-visible ITOC ID because the VM addresses entries by
-            // that ID; archive order remains separate in rz-project.json.
-            // Other archive profiles retain archive order as their stable stem.
+            // Image assets use stable root-level stems. SC decode first writes
+            // per-entry machine state into a staging-only internal directory;
+            // write_routing_document later consolidates it into one compressed
+            // bundle and removes those temporary files. Engine-visible ITOC ID
+            // remains distinct from archive order throughout.
             let output_stem = if is_sc {
                 format!("{:05}", file.id().expect("SC ID was validated"))
             } else {
@@ -239,7 +254,12 @@ where
         }
         if !options.raw_only {
             codec::charset::write_default_document(&stage.join("charset.json"))?;
-            codec::script::write_routing_document(stage, &assets)?;
+            let presentation_order = codec::script::write_routing_document(
+                stage,
+                &assets,
+                options.debug_script_ir,
+            )?;
+            codec::script::apply_presentation_order(&mut assets, &presentation_order)?;
         }
     }
 
@@ -440,6 +460,30 @@ fn build_cpk(
     } else {
         None
     };
+    let scenario_dialogues = if is_sc {
+        let entries = codec::script::load_dialogue_document(project_directory)?;
+        if entries.len() != SC_ENTRY_COUNT {
+            return Err(AssetError::InvalidProject(format!(
+                "scenario-dialogue.json contains {} entries, expected {SC_ENTRY_COUNT}",
+                entries.len()
+            )));
+        }
+        Some(entries)
+    } else {
+        None
+    };
+    let scenario_states = if is_sc {
+        let entries = codec::script::load_state_bundle(project_directory)?;
+        if entries.len() != SC_ENTRY_COUNT {
+            return Err(AssetError::InvalidProject(format!(
+                ".rz-internal/sc-state.json.gz contains {} entries, expected {SC_ENTRY_COUNT}",
+                entries.len()
+            )));
+        }
+        Some(entries)
+    } else {
+        None
+    };
     let mut sc_entries = [ScEntryPatch::default(); SC_ENTRY_COUNT];
     let mut sc_seen = [false; SC_ENTRY_COUNT];
     let mut inputs = Vec::with_capacity(ordered.len());
@@ -454,6 +498,12 @@ fn build_cpk(
                     entry.file_name
                 )));
             };
+            if document != ".rz-internal/sc-state.json.gz" {
+                return Err(AssetError::InvalidProject(format!(
+                    "sc.cpk entry {} does not reference the compact SC state bundle",
+                    entry.file_name
+                )));
+            }
             let index = usize::try_from(entry_id).map_err(|_| {
                 AssetError::InvalidProject("SC entry ID exceeds usize".to_owned())
             })?;
@@ -462,10 +512,26 @@ fn build_cpk(
                     "sc.cpk has an invalid or duplicate entry ID {entry_id}"
                 )));
             }
-            let document_path = project_directory.join(document);
-            let info = codec::script::inspect_build_with_charset(
-                &document_path,
+            let dialogue = scenario_dialogues
+                .as_ref()
+                .and_then(|entries| entries.get(&entry_id))
+                .ok_or_else(|| {
+                    AssetError::InvalidProject(format!(
+                        "scenario-dialogue.json omits engine entry {entry_id}"
+                    ))
+                })?;
+            let state = scenario_states
+                .as_ref()
+                .and_then(|entries| entries.get(&entry_id))
+                .ok_or_else(|| {
+                    AssetError::InvalidProject(format!(
+                        ".rz-internal/sc-state.json.gz omits engine entry {entry_id}"
+                    ))
+                })?;
+            let info = codec::script::inspect_state_build_with_charset_and_dialogue(
+                state,
                 charset_map.as_ref().expect("SC charset was initialized"),
+                Some(dialogue),
             )?;
             let stock_allocation = engine_allocations::allocation_size(&archive, entry_id)
                 .ok_or_else(|| {
@@ -492,11 +558,12 @@ fn build_cpk(
                 secondary_count: info.secondary_count,
             };
             sc_seen[index] = true;
-            codec::script::encode_with_allocation_and_charset(
-                &document_path,
+            codec::script::encode_state_with_allocation_and_charset_and_dialogue(
+                state,
                 allocation,
                 allow_eboot_patch,
                 charset_map.as_ref().expect("SC charset was initialized"),
+                Some(dialogue),
             )?
         } else {
             codec::encode(&entry.kind, project_directory)?

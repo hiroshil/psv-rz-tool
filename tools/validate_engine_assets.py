@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Evidence-linked static/corpus validator for rz-tool 1.0.0.
+"""Evidence-linked static/corpus validator for rz-tool 1.0.1.
 
 This validator does not replace `cargo check`. It verifies the source-level
-stable 1.0 contracts, the two-JSON SC corpus layout, executable-resident
-sector/metadata tables, the patch sites used by `--eboot-in/--eboot-out`, and
-(optionally) the exact Capstone evidence report.
+stable contracts, the compact SC dialogue project layout, fail-closed text
+coverage invariants, executable-resident sector/metadata tables, patch sites,
+and optionally the exact Capstone evidence report.
 """
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import pathlib
 import re
@@ -59,7 +60,7 @@ def validate_delimiters(source: str, path: pathlib.Path) -> None:
 
 def validate_source() -> dict:
     workspace = tomllib.loads(read("Cargo.toml"))
-    assert workspace["workspace"]["package"]["version"] == "1.0.0"
+    assert workspace["workspace"]["package"]["version"] == "1.0.1"
     manifest = read("crates/rz-assets/src/manifest.rs")
     script = read("crates/rz-assets/src/codec/script.rs")
     pipeline = read("crates/rz-assets/src/pipeline.rs")
@@ -72,22 +73,62 @@ def validate_source() -> dict:
     assert "PROJECT_SCHEMA_VERSION: u32 = 1" in manifest
     assert "const DOCUMENT_VERSION: u32 = 1" in script
     assert "const SOURCE_DOCUMENT_VERSION: u32 = 1" in script
-    assert "const ROUTING_DOCUMENT_VERSION: u32 = 1" in script
-    assert "speaker_source_glyphs" in script
+    assert "const ROUTING_DOCUMENT_VERSION: u32 = 2" in script
+    assert "const DIALOGUE_DOCUMENT_VERSION: u32 = 1" in script
+    assert "const STATE_BUNDLE_VERSION: u32 = 2" in script
+    assert 'const STATE_BUNDLE_PATH: &str = ".rz-internal/sc-state.json.gz"' in script
+    assert "ScriptMachineState" in script
+    assert "ScriptMachineDocument" in script
+    assert "ScriptMachineNode" in script
+    assert "ScriptGlyphAlias" in script
+    assert "compact_script_state" in script
+    assert "hydrate_script_state" in script
+    assert "compact_source_document" in script
+    assert "hydrate_machine_source" in script
+    assert "encode_text_with_aliases" in script
+    assert "ScriptTextGrammar" in script
+    assert "SecondaryString" in script
+    assert "InlineFf42" in script and "InlineFf8c" in script
     assert "encode_span_preserving_source" in script
     assert "unchanged_charset_alias_preserves_original_glyph_id" in script
     assert "multi_page_dialogue_round_trips_exactly" in script
+    assert "validate_text_coverage" in script
+    assert "validate_source_roundtrip" in script
+    assert "refusing extraction to avoid hidden text loss" in script
+    assert "scenario-dialogue.json" in script
+    assert "compact_state_contains_no_duplicate_text_and_hydrates_exactly" in script
+    assert ".rz-internal/sc-state.json.gz" in script
+    assert "GzEncoder" in script and "GzDecoder" in script
+    assert "debug/scenario-ir" not in script  # path is composed from components
+    assert 'join("debug").join("scenario-ir")' in script
+    assert "load_dialogue_document" in script
+    assert "load_state_bundle" in script
+    assert "apply_dialogue_entry" in script
+    assert "source: compact_source_document(source, charset::default_map())?" in script
+    assert "validate_source_text_coverage" in script
+    assert "leaves a secondary-target string in raw IR" in script
+    assert "leaves a proven FF42/FF8C inline string in raw IR" in script
+    assert "unanchored_low_operands_remain_raw_and_round_trip" in script
+    assert "secondary_machine_suffix_low_operands_are_not_reclassified_as_text" in script
+    assert "hides an FFFE dialogue-page terminator in machine suffix words" in script
+    assert "edited_non_dialogue_text_reencodes_without_source_glyphs" in script
     assert "scenario-routing.json" in script
-    assert 'format!("{output_stem}.script.json")' in script
-    assert 'format!("{output_stem}.script-meta.json")' in script
+    assert "scenario-dialogue.json" in script
+    assert "build_scenario_navigation" in script
+    assert "apply_presentation_order" in script
+    assert '"{:05}-id{:05}"' in script
+    assert 'format!(".rz-internal/sc/{editable_file_name}")' in script
+    assert 'format!(".rz-internal/sc/id{entry_id:05}.script-state.json")' in script
+    assert "temporary_entry_directory" in script
+    assert "fs::remove_dir_all(temporary_entry_directory)" in script
     decode_body = script[script.index("pub fn decode("):script.index("pub fn encode(")]
     assert "script-payload.txt" not in decode_body
     assert "script-text.json" not in decode_body
     assert "script-source.json" not in decode_body
     assert "std::mem::take(&mut source_document.secondary_records)" in decode_body
-    assert "encode_with_allocation_and_charset" in script
-    assert "inspect_build_with_charset" in script
-    assert "--eboot-in" in cli and "--eboot-out" in cli and "--charset-map" in cli
+    assert "encode_state_with_allocation_and_charset_and_dialogue" in script
+    assert "inspect_state_build_with_charset_and_dialogue" in script
+    assert "--eboot-in" in cli and "--eboot-out" in cli and "--charset-map" in cli and "--debug-script-ir" in cli
     assert "SC_SECTOR_TABLE_VA: u32 = 0x8111_344c" in eboot
     assert "SC_METADATA_TABLE_VA: u32 = 0x810f_9b1c" in eboot
     assert "SC_BUFFER_MOV_VA: u32 = 0x8101_b554" in eboot
@@ -95,7 +136,9 @@ def validate_source() -> dict:
     assert "write_default_document" in charset and "load_document" in charset
     assert "charset.json" in pipeline
     assert 'format!("{:05}", file.id().expect("SC ID was validated"))' in pipeline
-    assert "write_routing_document(stage, &assets)" in pipeline
+    assert "processing_order.sort_by_key" in pipeline
+    assert "options.debug_script_ir" in pipeline
+    assert "apply_presentation_order" in pipeline
     assert "sc.cpk does not contain every engine ID 0..88" in pipeline
     assert "const DOCUMENT_VERSION: u32 = 1" in package
     assert "preserved_decoded_fnv1a64" in package
@@ -116,6 +159,8 @@ def validate_source() -> dict:
     assert "block_visual_error" in gxt
     assert "representable resolution" in gxt
     assert "source_aware_bc_keeps_unchanged_blocks_byte_exact" in gxt
+    assert "#[cfg(test)]\nfn build_chunk_table(" in package
+    assert "fn encode_color_block(pixels:" not in gxt
     assert not list((ROOT / "tools").glob("migrate_*"))
     analysis_files = sorted(path.name for path in ROOT.glob("*ANALYSIS*.md"))
     assert analysis_files == ["ENGINE_ANALYSIS.md"], analysis_files
@@ -137,8 +182,10 @@ def validate_source() -> dict:
         "schema": 1,
         "engine_package_document_version": 1,
         "script_meta_version": 1,
-        "script_editable_version": 1,
-        "scenario_routing_version": 1,
+        "script_internal_ir_version": 1,
+        "scenario_dialogue_version": 1,
+        "scenario_routing_version": 2,
+        "scenario_state_bundle_version": 2,
         "glyphs": len(codepoints),
     }
 
@@ -151,113 +198,341 @@ def count_secondary_labels(meta: dict) -> int:
     )
 
 
+
+def derive_navigation_order(
+    entry_ids: list[int],
+    transitions: list[dict],
+    startup_entry_id: int,
+) -> list[dict]:
+    from collections import deque
+
+    adjacency: dict[int, list[int]] = {}
+    global_indegree = {entry_id: 0 for entry_id in entry_ids}
+    for transition in sorted(
+        transitions,
+        key=lambda item: (
+            item["source_entry_id"],
+            item["source_node_index"],
+            item["source_word_index"],
+        ),
+    ):
+        source = transition["source_entry_id"]
+        target = transition["target_entry_id"]
+        targets = adjacency.setdefault(source, [])
+        if target not in targets:
+            targets.append(target)
+            global_indegree[target] += 1
+
+    entry_set = set(entry_ids)
+    visited: set[int] = set()
+    output: list[dict] = []
+
+    def append_component(root: int, reachable: bool) -> None:
+        if root not in entry_set or root in visited:
+            return
+        discovery = {root: 0}
+        depth = {root: 0}
+        queue = deque([root])
+        while queue:
+            source = queue.popleft()
+            for target in adjacency.get(source, []):
+                if target in entry_set and target not in visited and target not in discovery:
+                    discovery[target] = len(discovery)
+                    depth[target] = depth[source] + 1
+                    queue.append(target)
+
+        component = set(discovery)
+        indegree = {entry_id: 0 for entry_id in component}
+        for source in component:
+            for target in adjacency.get(source, []):
+                if target in component:
+                    indegree[target] += 1
+        emitted: set[int] = set()
+        while len(emitted) < len(component):
+            candidates = [
+                entry_id
+                for entry_id in component
+                if entry_id not in emitted and indegree[entry_id] == 0
+            ]
+            if not candidates:
+                candidates = [entry_id for entry_id in component if entry_id not in emitted]
+            entry_id = min(candidates, key=lambda value: (discovery[value], value))
+            emitted.add(entry_id)
+            visited.add(entry_id)
+            output.append({
+                "navigation_order": len(output),
+                "component_root_entry_id": root,
+                "route_depth": depth.get(entry_id, 0),
+                "reachable_from_startup": reachable,
+                "entry_id": entry_id,
+            })
+            for target in adjacency.get(entry_id, []):
+                if target in indegree:
+                    indegree[target] = max(0, indegree[target] - 1)
+
+    append_component(startup_entry_id, True)
+    for entry_id in sorted(entry_ids):
+        if entry_id not in visited and global_indegree[entry_id] == 0:
+            append_component(entry_id, False)
+    for entry_id in sorted(entry_ids):
+        append_component(entry_id, False)
+    return output
+
 def validate_corpus(root: pathlib.Path) -> dict:
-    editable_paths = sorted(root.glob("[0-9][0-9][0-9][0-9][0-9].script.json"))
-    meta_paths = sorted(root.glob("[0-9][0-9][0-9][0-9][0-9].script-meta.json"))
-    assert len(editable_paths) == len(meta_paths) == SC_COUNT
-    assert not list(root.glob("*.script-source.json"))
-    assert not list(root.glob("*.script-text.json"))
-    assert not list(root.glob("*.script-payload.txt"))
+    assert not list(root.glob("*.script.json"))
+    assert not list(root.glob("*.script-meta.json"))
+    assert not list(root.glob("*-id*.json"))
+    assert not (root / "debug").exists()
     assert not list(root.rglob("*skeleton.bin"))
-    assert not [path for path in root.iterdir() if path.is_dir()]
+
+    visible = {path.name for path in root.iterdir() if not path.name.startswith(".")}
+    assert visible == {
+        "charset.json",
+        "rz-project.json",
+        "scenario-dialogue.json",
+        "scenario-routing.json",
+    }, visible
 
     charset = json.loads((root / "charset.json").read_text(encoding="utf-8"))
     assert charset["document_version"] == 1
     assert charset["glyph_count"] == 0xE12
-    assert len(charset["codepoints"]) == 0xE12
     codepoints = [chr(int(value[2:], 16)) for value in charset["codepoints"]]
+    reverse = {}
+    for index, character in enumerate(codepoints):
+        reverse.setdefault(character, index)
+    reverse["ー"] = 0x00D0
 
     manifest = json.loads((root / "rz-project.json").read_text(encoding="utf-8"))
     assert manifest["schema_version"] == 1
     assets = manifest["source"]["assets"]
     assert len(assets) == SC_COUNT
+    assert sorted(asset["id"] for asset in assets) == list(range(SC_COUNT))
+    assert sorted(asset["order"] for asset in assets) == list(range(SC_COUNT))
+    assert all(asset["document"] == ".rz-internal/sc-state.json.gz" for asset in assets)
 
+    dialogue = json.loads((root / "scenario-dialogue.json").read_text(encoding="utf-8"))
     routing = json.loads((root / "scenario-routing.json").read_text(encoding="utf-8"))
-    assert routing["document_version"] == 1
-    assert routing["archive"] == "sc.cpk"
-    assert routing["startup"]["entry_id"] == 0x56
-    assert routing["startup"]["stream_id"] == 0
-    assert "navigation evidence" in routing["transition_model"]
-    assert len(routing["entries"]) == SC_COUNT
-    assert [entry["entry_id"] for entry in routing["entries"]] == list(range(SC_COUNT))
+    assert dialogue.keys() == {"document_version", "archive", "entries"}
+    assert dialogue["document_version"] == 1 and dialogue["archive"] == "sc.cpk"
+    assert routing["document_version"] == 2 and routing["archive"] == "sc.cpk"
+    assert routing["dialogue_document"] == "scenario-dialogue.json"
+    assert routing["startup"] == {
+        "entry_id": 86,
+        "stream_id": 0,
+        "evidence": routing["startup"]["evidence"],
+    }
+    assert len(dialogue["entries"]) == len(routing["entries"]) == SC_COUNT
+    assert [entry["entry_id"] for entry in dialogue["entries"]] == [
+        entry["entry_id"] for entry in routing["entries"]
+    ]
+    assert all("editable" not in entry for entry in routing["entries"])
+    for entry in dialogue["entries"]:
+        assert entry.keys() == {"entry_id", "dialogues", "texts"}
+        for item in entry["dialogues"]:
+            assert item.keys() == {"marker_index", "speaker", "pages"}
+            assert item["pages"]
+        for item in entry["texts"]:
+            assert item.keys() == {"text_index", "grammar", "text"}
+            assert item["grammar"] in {"secondary-string", "inline-ff42", "inline-ff8c"}
 
-    total_dialogues = 0
-    total_pages = 0
-    page_histogram = {1: 0, 2: 0, 3: 0}
-    total_labels = 0
-    raw_nodes = 0
-    samples = []
-    opening_line_found = False
-    stream_counts = {}
-    for entry_id in range(SC_COUNT):
-        stem = f"{entry_id:05d}"
-        editable = json.loads((root / f"{stem}.script.json").read_text(encoding="utf-8"))
-        meta = json.loads((root / f"{stem}.script-meta.json").read_text(encoding="utf-8"))
-        asset = next(asset for asset in assets if asset.get("id") == entry_id)
-        assert editable["document_version"] == 1
-        assert meta["document_version"] == 1
-        assert editable["entry_id"] == meta["entry_id"] == entry_id
-        assert editable["charset"] == charset["charset_id"]
-        assert meta["editable"] == f"{stem}.script.json"
-        assert meta["payload_capacity_bytes"] == meta["allocation_size"] - 0x2000 - 0x10
-        assert len(bytes.fromhex(meta["opaque_footer_hex"])) == 0x10
-        assert asset["document"] == f"{stem}.script-meta.json"
-        assert editable.get("secondary_records", []) == []
-        stream_counts[entry_id] = editable["stream_count"]
-        dialogues = [node for node in editable["nodes"] if node["kind"] == "dialogue"]
-        raws = [node for node in editable["nodes"] if node["kind"] == "raw"]
-        total_dialogues += len(dialogues)
-        raw_nodes += len(raws)
-        total_labels += count_secondary_labels(meta)
-        for expected, node in enumerate(dialogues):
-            assert node["marker_index"] == expected
-            assert isinstance(node["speaker"], str)
-            assert isinstance(node["speaker_source_glyphs"], list)
-            assert "text" not in node
-            pages = node["pages"]
-            assert 1 <= len(pages) <= 3
-            page_histogram[len(pages)] += 1
-            total_pages += len(pages)
-            for page in pages:
-                assert isinstance(page["text"], str)
-                assert isinstance(page["source_glyphs"], list)
-                assert "".join(codepoints[glyph] for glyph in page["source_glyphs"]) == page["text"]
-                if "これ、本当にラムたちが" in page["text"]:
-                    opening_line_found = entry_id == 86 and node["marker_index"] == 1
-        if len(samples) < 3 and dialogues:
-            samples.append({
-                "entry": entry_id,
-                "marker": dialogues[0]["marker_index"],
-                "speaker": dialogues[0]["speaker"],
-                "pages": [page["text"] for page in dialogues[0]["pages"]],
-            })
+    bundle_path = root / ".rz-internal" / "sc-state.json.gz"
+    assert bundle_path.is_file()
+    assert not (root / ".rz-internal" / "sc").exists()
+    with gzip.open(bundle_path, "rt", encoding="utf-8") as handle:
+        bundle = json.load(handle)
+    assert bundle["document_version"] == 2 and bundle["archive"] == "sc.cpk"
+    assert len(bundle["entries"]) == SC_COUNT
+    state_by_id = {entry["entry_id"]: entry for entry in bundle["entries"]}
+    assert sorted(state_by_id) == list(range(SC_COUNT))
 
+    def glyph_end(words: list[int], start: int) -> int | None:
+        cursor = start
+        while cursor < len(words) and words[cursor] < 0xE12:
+            cursor += 1
+        if cursor > start and cursor < len(words) and words[cursor] == 0xFFFF:
+            return cursor
+        return None
+
+    def inline_text(words: list[int], index: int) -> bool:
+        if words[index] not in (0xFF42, 0xFF8C):
+            return False
+        if (
+            words[index] == 0xFF8C
+            and index + 2 < len(words)
+            and words[index + 1 : index + 3] == [0, 0xFFFF]
+        ):
+            return False
+        return glyph_end(words, index + 1) is not None
+
+    def validate_aliases(text: str, aliases: list[dict]) -> None:
+        seen = set()
+        for alias in aliases:
+            assert alias.keys() == {"character_index", "glyph_id"}
+            index = alias["character_index"]
+            glyph_id = alias["glyph_id"]
+            assert index not in seen
+            seen.add(index)
+            assert 0 <= index < len(text)
+            assert 0 <= glyph_id < len(codepoints)
+            assert codepoints[glyph_id] == text[index]
+            assert reverse[text[index]] != glyph_id
+
+    by_dialogue_id = {entry["entry_id"]: entry for entry in dialogue["entries"]}
+    assert len(by_dialogue_id) == SC_COUNT
+    total_dialogues = total_pages = total_texts = total_aliases = 0
+    grammar_counts = {"secondary-string": 0, "inline-ff42": 0, "inline-ff8c": 0}
+    residual_fffe = residual_secondary = residual_inline = residual_long = 0
+    short_raw_runs = []
+    opening_line_found = choice_found = ff42_found = ff8c_found = False
+    secondary_machine_suffix_guard = False
+    forbidden_state_keys = {"text", "speaker", "pages", "source_glyphs", "speaker_source_glyphs", "charset"}
+
+    for entry_id, packed in state_by_id.items():
+        state = packed["state"]
+        machine = packed["source"]
+        assert state["entry_id"] == machine["entry_id"] == entry_id
+        assert state.keys() == {
+            "document_version",
+            "entry_id",
+            "source_size",
+            "allocation_size",
+            "payload_capacity_bytes",
+            "opaque_footer_hex",
+            "voice_header",
+            "trailing_byte",
+            "secondary_records",
+            "engine_metadata",
+        }
+        assert machine.keys() == {
+            "document_version",
+            "entry_id",
+            "stream_count",
+            "nodes",
+            "relocation_model",
+        }
+        assert machine["document_version"] == 1
+        assert not (forbidden_state_keys & machine.keys())
+
+        public_entry = by_dialogue_id[entry_id]
+        public_dialogues = {item["marker_index"]: item for item in public_entry["dialogues"]}
+        public_texts = {item["text_index"]: item for item in public_entry["texts"]}
+        seen_dialogues = set()
+        seen_texts = set()
+        expected_text_index = 0
+
+        for node in machine["nodes"]:
+            assert not (forbidden_state_keys & node.keys())
+            if node["kind"] == "raw":
+                words = node["words"]
+                residual_fffe += words.count(0xFFFE)
+                if any(label.startswith("secondary_") for label in node.get("labels", [])):
+                    residual_secondary += glyph_end(words, 0) is not None
+                residual_inline += any(inline_text(words, i) for i in range(len(words)))
+                cursor = 0
+                while cursor < len(words):
+                    if words[cursor] >= 0xE12:
+                        cursor += 1
+                        continue
+                    start = cursor
+                    while cursor < len(words) and words[cursor] < 0xE12:
+                        cursor += 1
+                    if cursor < len(words) and words[cursor] == 0xFFFF:
+                        length = cursor - start
+                        if length >= 3:
+                            residual_long += 1
+                        elif length == 2:
+                            short_raw_runs.append(
+                                (entry_id, words[start:cursor], words[max(0, start - 3):start])
+                            )
+                continue
+
+            if node["kind"] == "text":
+                assert node["text_index"] == expected_text_index
+                expected_text_index += 1
+                item = public_texts[node["text_index"]]
+                assert item["grammar"] == node["grammar"]
+                assert "prefix_words" in node and "suffix_words" in node
+                aliases = node.get("glyph_aliases", [])
+                validate_aliases(item["text"], aliases)
+                total_aliases += len(aliases)
+                seen_texts.add(node["text_index"])
+                if (
+                    entry_id == 17
+                    and node["text_index"] == 6
+                    and node["grammar"] == "secondary-string"
+                    and item["text"] == "キスといえば口"
+                    and node["suffix_words"] == [0x0004, 0x0019, 0x000E, 0xFFFF]
+                ):
+                    secondary_machine_suffix_guard = True
+                continue
+
+            assert node["kind"] == "dialogue"
+            item = public_dialogues[node["marker_index"]]
+            validate_aliases(item["speaker"], node.get("speaker_glyph_aliases", []))
+            total_aliases += len(node.get("speaker_glyph_aliases", []))
+            page_aliases = node.get("page_glyph_aliases", [])
+            assert len(page_aliases) <= len(item["pages"])
+            for index, aliases in enumerate(page_aliases):
+                validate_aliases(item["pages"][index], aliases)
+                total_aliases += len(aliases)
+            seen_dialogues.add(node["marker_index"])
+
+        assert seen_dialogues == set(public_dialogues)
+        assert seen_texts == set(public_texts)
+        for item in public_entry["dialogues"]:
+            if "これ、本当にラムたちが" in item["pages"]:
+                opening_line_found = entry_id == 86 and item["marker_index"] == 1
+            total_pages += len(item["pages"])
+        total_dialogues += len(public_entry["dialogues"])
+        for item in public_entry["texts"]:
+            grammar_counts[item["grammar"]] += 1
+            choice_found |= item["text"] == "エミリアの質問に真面目に答える"
+            ff42_found |= item["grammar"] == "inline-ff42" and item["text"] == "これはコメントです"
+            ff8c_found |= item["grammar"] == "inline-ff8c" and item["text"] == "ぶりっじ"
+        total_texts += len(public_entry["texts"])
+
+    assert residual_fffe == residual_secondary == residual_inline == residual_long == 0
+    assert short_raw_runs == [(87, [2, 1], [0xFFDE, 0, 0x3000])]
     assert total_dialogues == 20686
     assert total_pages == 37125
-    assert page_histogram == {1: 7927, 2: 9079, 3: 3680}
-    assert total_labels == 119
-    assert opening_line_found
-    transitions = routing["transitions"]
-    assert len(transitions) == 94
-    for transition in transitions:
-        assert transition["opcode"] == "FFEF"
-        assert 0 <= transition["target_entry_id"] < SC_COUNT
-        assert 0 <= transition["target_stream_id"] < stream_counts[transition["target_entry_id"]]
+    assert total_texts == 121
+    assert total_aliases == 5995
+    assert grammar_counts == {"secondary-string": 119, "inline-ff42": 1, "inline-ff8c": 1}
+    assert opening_line_found and choice_found and ff42_found and ff8c_found
+    assert secondary_machine_suffix_guard
+    assert [entry["entry_id"] for entry in dialogue["entries"][:6]] == [86, 8, 9, 10, 11, 12]
+
+    compressed_size = bundle_path.stat().st_size
+    dialogue_size = (root / "scenario-dialogue.json").stat().st_size
+    assert compressed_size < dialogue_size // 4
+
     return {
         "entries": SC_COUNT,
-        "json_files_per_entry": 2,
-        "dialogue_nodes": total_dialogues,
-        "dialogue_pages": total_pages,
-        "page_histogram": page_histogram,
-        "raw_nodes": raw_nodes,
-        "secondary_payload_labels": total_labels,
-        "range_validated_ffef_route_candidates": len(transitions),
-        "startup_entry": routing["startup"],
+        "dialogues": total_dialogues,
+        "pages": total_pages,
+        "additional_text_records": total_texts,
+        "text_grammars": grammar_counts,
+        "sparse_glyph_aliases": total_aliases,
+        "state_contains_duplicate_text": False,
+        "state_bundle_bytes": compressed_size,
+        "dialogue_document_bytes": dialogue_size,
+        "residual_fffe_in_raw_nodes": residual_fffe,
+        "residual_secondary_strings_in_raw_nodes": residual_secondary,
+        "residual_ff42_ff8c_strings_in_raw_nodes": residual_inline,
+        "residual_unclassified_strings_3plus_glyphs": residual_long,
+        "two_glyph_raw_sequences": {
+            "count": len(short_raw_runs),
+            "classification": "entry 87 FFDE comparison-expression operands, not text",
+        },
         "opening_line_recovered": opening_line_found,
-        "external_skeletons": 0,
-        "samples": samples,
+        "choice_text_recovered": choice_found,
+        "inline_ff42_recovered": ff42_found,
+        "inline_ff8c_recovered": ff8c_found,
+        "secondary_machine_suffix_false_positive_guard": secondary_machine_suffix_guard,
+        "default_debug_directory_present": False,
+        "machine_state_files": 1,
+        "dialogue_document": "scenario-dialogue.json",
     }
-
 
 class Elf:
     def __init__(self, path: pathlib.Path):
