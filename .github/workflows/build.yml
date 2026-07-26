@@ -1,0 +1,77 @@
+name: Build binaries
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main", "master"]
+    tags: ["v*"]
+  pull_request:
+    branches: ["main", "master"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Portable Linux x86_64 binary: static musl build works on most Linux distros.
+          - name: linux-x86_64-musl
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            archive: rz-tool-linux-x86_64-musl.tar.gz
+
+          # Native Windows x86_64 binary.
+          - name: windows-x86_64-msvc
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: rz-tool-windows-x86_64-msvc.zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install Linux musl tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Build release binary
+        run: cargo build --release --package rz-tool --target ${{ matrix.target }}
+
+      - name: Package Linux binary
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist/pkg
+          cp target/${{ matrix.target }}/release/rz-tool dist/pkg/rz-tool
+          cp LICENSE dist/pkg/LICENSE
+          chmod +x dist/pkg/rz-tool
+          tar -C dist/pkg -czf dist/${{ matrix.archive }} rz-tool LICENSE
+
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/pkg | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/rz-tool.exe" "dist/pkg/rz-tool.exe"
+          Copy-Item "LICENSE" "dist/pkg/LICENSE"
+          Compress-Archive -Path "dist/pkg/*" -DestinationPath "dist/${{ matrix.archive }}" -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.name }}
+          path: dist/${{ matrix.archive }}
+          if-no-files-found: error
