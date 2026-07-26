@@ -6,6 +6,7 @@
 python tools/validate_engine_assets.py \
   --corpus /path/to/extracted-sc-project \
   --elf /path/to/eboot.bin.elf \
+  --sc-cpk /path/to/original-sc.cpk \
   --secrect /path/to/mapper.json \
   [--capstone-path /path/to/capstone_pkg] \
   [--capstone-wheel /path/to/capstone-5.0.9-*.whl] \
@@ -24,12 +25,14 @@ The source checks require:
 - exact `(entry_id, marker_index)` dialogue and `(entry_id, text_index)` text overlay validation during build, including rejection of empty non-dialogue text records;
 - fail-closed runtime coverage for `FFFE` pages, secondary-target strings and `FF42`/`FF8C` inline strings; low-valued `FFFF`-terminated operand runs are preserved as machine data unless an engine-proven text anchor owns them;
 - extraction-time byte-exact IR reassembly, including secondary relocation records;
+- exact SC integrity-footer verification and regeneration matching `FUN_8102B4AC`:
+  two little-endian wrapping `u64` lane sums seeded with `0x1111111111111111`;
 - source-aware BC encoding, automatic P4/P8 palette rebuild, incremental GZIP
   chunk reuse and rebuilt-package verification;
 - the complete 3,602-codepoint charset table;
 - exactly one analysis Markdown file, `ENGINE_ANALYSIS.md`.
 
-The supplied SC corpus check requires:
+The supplied SC corpus and original `sc.cpk` checks require:
 
 - all 89 engine entries;
 - 20,686 primary dialogues and 37,125 ordered pages;
@@ -40,6 +43,7 @@ The supplied SC corpus check requires:
 - the offline audit reports no unclassified `FFFF`-terminated standalone raw run of three or more glyph-range words; this numerical pattern is not a runtime grammar;
 - entry 17 text record 6 preserves machine suffix `0004 0019 000e ffff` without reclassifying it as text;
 - the only two-glyph raw candidate is entry 87's `FFDE 0000 3000 0002 0001 FFFF` comparison expression, which `FUN_8100b2ac` passes to `FUN_8100b134` as command operands rather than display text;
+- all 89 original SC integrity footers reproduce exactly from their allocated entry bytes;
 - the opening line `これ、本当にラムたちが` at entry 86, marker 1;
 - the choice label `エミリアの質問に真面目に答える` and both inline strings
   present in `scenario-dialogue.json`;

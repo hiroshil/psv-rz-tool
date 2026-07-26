@@ -76,6 +76,15 @@ def validate_source() -> dict:
     assert "const ROUTING_DOCUMENT_VERSION: u32 = 2" in script
     assert "const DIALOGUE_DOCUMENT_VERSION: u32 = 1" in script
     assert "const STATE_BUNDLE_VERSION: u32 = 2" in script
+    assert "const SC_INTEGRITY_FOOTER_SIZE: usize = 0x10" in script
+    assert "const SC_INTEGRITY_SEED: u64 = 0x1111_1111_1111_1111" in script
+    assert "fn compute_sc_integrity_footer(" in script
+    assert "FUN_8102B4AC treats each 16-byte block" in script
+    assert "output.extend_from_slice(&footer)" in script
+    assert "SC integrity footer mismatch" in script
+    assert "sc_integrity_footer_matches_engine_lane_sums" in script
+    assert "sc_integrity_footer_changes_after_same_length_edit" in script
+    assert "preserves the extracted 16-byte footer" not in script
     assert 'const STATE_BUNDLE_PATH: &str = ".rz-internal/sc-state.json.gz"' in script
     assert "ScriptMachineState" in script
     assert "ScriptMachineDocument" in script
@@ -613,6 +622,25 @@ def validate_elf(path: pathlib.Path) -> dict:
     return report
 
 
+def validate_sc_integrity(path: pathlib.Path) -> dict:
+    from fix_sc_integrity import enumerate_entries, sc_footer
+
+    archive = path.read_bytes()
+    entries = enumerate_entries(archive)
+    assert len(entries) == SC_COUNT
+    assert [entry.entry_id for entry in entries] == list(range(SC_COUNT))
+    for entry in entries:
+        footer_offset = entry.offset + entry.size - 0x10
+        stored = archive[footer_offset : footer_offset + 0x10]
+        expected = sc_footer(archive[entry.offset:footer_offset])
+        assert stored == expected, entry.entry_id
+    return {
+        "entries": len(entries),
+        "matched": len(entries),
+        "algorithm": "FUN_8102B4AC two seeded little-endian u64 wrapping sums",
+    }
+
+
 def validate_capstone(
     elf: pathlib.Path,
     secrect: pathlib.Path,
@@ -641,6 +669,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus", type=pathlib.Path)
     parser.add_argument("--elf", type=pathlib.Path)
+    parser.add_argument("--sc-cpk", type=pathlib.Path)
     parser.add_argument("--secrect", type=pathlib.Path)
     parser.add_argument("--capstone-path", type=pathlib.Path, default=None)
     parser.add_argument("--capstone-wheel", type=pathlib.Path, default=None)
@@ -658,6 +687,8 @@ def main() -> int:
         report["script_corpus"] = validate_corpus(args.corpus)
     if args.elf:
         report["elf"] = validate_elf(args.elf)
+    if args.sc_cpk:
+        report["sc_integrity"] = validate_sc_integrity(args.sc_cpk)
     if args.elf and args.secrect:
         report["capstone_report_exact"] = validate_capstone(
             args.elf, args.secrect, args.capstone_path, args.capstone_wheel

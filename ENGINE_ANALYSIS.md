@@ -742,7 +742,7 @@ rebuild. It retains:
 - exact raw `u16` command/data nodes;
 - typed text-node prefix/suffix words;
 - symbolic labels for engine-consumed payload addresses;
-- secondary relocation records, allocation data and the opaque footer.
+- secondary relocation records, allocation data and the extracted integrity footer.
 
 It does not retain Unicode dialogue strings or complete source glyph vectors.
 Those are reconstructed from `scenario-dialogue.json` and `charset.json` during
@@ -796,20 +796,37 @@ A glyph-range run followed by `FFFF` is not a runtime grammar by itself because
 VM operands share the same numeric range. Such runs remain an offline audit
 signal only.
 
-### 10.11 Allocation tail
+### 10.11 Allocation tail and integrity footer
 
 The supplied entries follow:
 
 ```text
 logical payload ending in ffff
 zero-filled free capacity
-16-byte opaque footer at allocation end
+16-byte integrity footer at allocation end
 ```
 
-The free space is capacity, not source IR. Build emits the logical payload,
-zero-fills remaining capacity, then restores the explicit footer at the last 16
-bytes. No located VM consumer reads the footer, but its producer/checksum
-semantics are unproved, so it is preserved.
+The free space is capacity, not source IR. The footer is consumed before VM
+initialization. `FUN_81053B7A` calls the function pointer at `DAT_8110C328`
+after reading `sector_count << 11` bytes; that pointer is `FUN_8102B4AC`.
+The verifier excludes the last 16 bytes, then processes every preceding
+16-byte block as two little-endian `u64` lanes:
+
+```text
+lane0 = 0x1111111111111111
+lane1 = 0x1111111111111111
+for each 16-byte block:
+    lane0 = wrapping_add(lane0, le_u64(block[0:8]))
+    lane1 = wrapping_add(lane1, le_u64(block[8:16]))
+footer = le_u64(lane0) || le_u64(lane1)
+```
+
+The callback returns zero on mismatch, so the asynchronous archive read never
+reaches its successful completion state. This explains why even a same-length
+swap such as `これ` to `れこ` hangs when the original footer is preserved.
+Build now zero-fills remaining capacity and regenerates both checksum lanes.
+Extraction also rejects a source entry whose stored footer does not match.
+The algorithm reproduces all 89 original SC footers exactly.
 
 ## 11. SC global metadata and ELF patching
 

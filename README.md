@@ -177,9 +177,17 @@ engine. Build uses it by default unless `--charset-map` supplies another map.
 
 `.rz-internal/sc-state.json.gz` is one compact, machine-managed structural
 bundle. It contains relocation labels, raw VM words, typed command prefix/suffix
-words, allocation metadata, secondary relocation records and the opaque
-allocation footer. It deliberately contains no dialogue Unicode strings and no
-complete dialogue glyph vectors; those exist only in `scenario-dialogue.json`.
+words, allocation metadata, secondary relocation records and the extracted
+SC integrity footer. Build regenerates that footer from rebuilt entry bytes. It
+deliberately contains no dialogue Unicode strings and no complete dialogue glyph
+vectors; those exist only in `scenario-dialogue.json`.
+
+Every fixed-size SC entry ends in a 16-byte integrity footer. The engine callback
+`FUN_8102B4AC`, invoked by `FUN_81053B7A` after the archive read, treats each
+preceding 16-byte block as two little-endian `u64` lanes. Both wrapping sums are
+seeded with `0x1111111111111111`; the two final lane values form the footer.
+Build recalculates it after padding. Preserving the original footer after any
+text edit causes the loader to reject the entry before the scenario VM starts.
 
 For byte-exact no-edit rebuilding, the bundle stores only sparse glyph-alias
 deltas where the original engine glyph ID differs from the canonical ID selected

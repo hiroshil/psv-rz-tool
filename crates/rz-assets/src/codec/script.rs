@@ -24,7 +24,8 @@ const RUNTIME_BASE: usize = 0x80;
 const SCRIPT_BASE: usize = 0x2000;
 const RUNTIME_HEADER_SIZE: usize = 0x10;
 const SECONDARY_RECORD_SIZE: usize = 0x1c;
-const OPAQUE_FOOTER_SIZE: usize = 0x10;
+const SC_INTEGRITY_FOOTER_SIZE: usize = 0x10;
+const SC_INTEGRITY_SEED: u64 = 0x1111_1111_1111_1111;
 const VOICE_NOT_EXIST: &[u8] = b"voice_not_exist\0";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,12 +37,13 @@ pub struct ScriptDocument {
     pub source_size: u32,
     pub allocation_size: u32,
     /// Bytes available for the logical script payload before the fixed 16-byte
-    /// opaque footer. Zero fill between logical payload and footer is capacity,
+    /// integrity footer. Zero fill between logical payload and footer is capacity,
     /// not source IR.
     pub payload_capacity_bytes: u32,
-    /// Last 16 bytes of the allocated SC payload. No located VM consumer reads
-    /// them, but their producer/checksum semantics are unproven, so they remain
-    /// explicit and are placed at the end of the rebuilt allocation.
+    /// Last 16 bytes of the allocated SC payload. `FUN_8102B4AC` verifies this
+    /// as two seeded 64-bit additive checksums over the complete allocation
+    /// excluding the footer. The extracted value is retained for diagnostics;
+    /// build always regenerates it from rebuilt bytes.
     pub opaque_footer_hex: String,
     /// Rebuild-authoritative representation of entry+0x0000..0x007f.
     pub voice_header: ScriptVoiceHeader,
@@ -1630,7 +1632,7 @@ fn inspect_document_source(
             AssetError::InvalidProject("script logical size overflows".to_owned())
         })?)
         .and_then(|value| value.checked_add(if document.trailing_byte.is_some() { 1 } else { 0 }))
-        .and_then(|value| value.checked_add(OPAQUE_FOOTER_SIZE))
+        .and_then(|value| value.checked_add(SC_INTEGRITY_FOOTER_SIZE))
         .ok_or_else(|| {
             AssetError::InvalidProject("script allocation requirement overflows".to_owned())
         })?;
@@ -1744,11 +1746,11 @@ fn encode_document_source(
             "script source_size exceeds allocation_size".to_owned(),
         ));
     }
-    let footer = decode_hex(&document.opaque_footer_hex)?;
-    if footer.len() != OPAQUE_FOOTER_SIZE {
+    let extracted_footer = decode_hex(&document.opaque_footer_hex)?;
+    if extracted_footer.len() != SC_INTEGRITY_FOOTER_SIZE {
         return Err(AssetError::InvalidProject(format!(
-            "script opaque footer has {} bytes, expected {OPAQUE_FOOTER_SIZE}",
-            footer.len()
+            "script integrity footer has {} bytes, expected {SC_INTEGRITY_FOOTER_SIZE}",
+            extracted_footer.len()
         )));
     }
     let original_capacity = usize::try_from(document.payload_capacity_bytes).map_err(|_| {
@@ -1756,7 +1758,7 @@ fn encode_document_source(
     })?;
     let documented_capacity = usize::try_from(document.allocation_size)
         .ok()
-        .and_then(|value| value.checked_sub(SCRIPT_BASE + OPAQUE_FOOTER_SIZE))
+        .and_then(|value| value.checked_sub(SCRIPT_BASE + SC_INTEGRITY_FOOTER_SIZE))
         .ok_or_else(|| AssetError::InvalidProject("documented script allocation is too small".to_owned()))?;
     if original_capacity != documented_capacity {
         return Err(AssetError::InvalidProject(format!(
@@ -1803,7 +1805,7 @@ fn encode_document_source(
     if let Some(byte) = document.trailing_byte {
         output.push(byte);
     }
-    let footer_start = allocation_size - OPAQUE_FOOTER_SIZE;
+    let footer_start = allocation_size - SC_INTEGRITY_FOOTER_SIZE;
     if output.len() > footer_start {
         return Err(AssetError::InvalidProject(format!(
             "rebuilt logical script ends at {:#x}, exceeding selected payload capacity {footer_start:#x}",
@@ -1811,6 +1813,9 @@ fn encode_document_source(
         )));
     }
     output.resize(footer_start, 0);
+    let footer = compute_sc_integrity_footer(&output).map_err(|error| {
+        AssetError::InvalidProject(format!("failed to generate SC integrity footer: {error}"))
+    })?;
     output.extend_from_slice(&footer);
 
     // Re-parse the exact rebuilt bytes. This verifies that the generated
@@ -1845,6 +1850,38 @@ fn round_up_sector(value: usize) -> Result<usize, AssetError> {
         .ok_or_else(|| AssetError::InvalidProject("script sector rounding overflows".to_owned()))
 }
 
+fn compute_sc_integrity_footer(input: &[u8]) -> Result<[u8; SC_INTEGRITY_FOOTER_SIZE], String> {
+    if input.len() % 0x10 != 0 {
+        return Err(format!(
+            "SC integrity checksum input has {:#x} bytes, expected a multiple of 0x10",
+            input.len()
+        ));
+    }
+
+    // FUN_8102B4AC treats each 16-byte block as two little-endian u64 lanes.
+    // Both wrapping sums start at 0x1111111111111111. The stored footer is
+    // lane 0 followed by lane 1, both little-endian.
+    let mut lane_0 = SC_INTEGRITY_SEED;
+    let mut lane_1 = SC_INTEGRITY_SEED;
+    for chunk in input.chunks_exact(0x10) {
+        lane_0 = lane_0.wrapping_add(u64::from_le_bytes(
+            chunk[..8]
+                .try_into()
+                .expect("16-byte checksum chunk always contains first u64"),
+        ));
+        lane_1 = lane_1.wrapping_add(u64::from_le_bytes(
+            chunk[8..]
+                .try_into()
+                .expect("16-byte checksum chunk always contains second u64"),
+        ));
+    }
+
+    let mut footer = [0u8; SC_INTEGRITY_FOOTER_SIZE];
+    footer[..8].copy_from_slice(&lane_0.to_le_bytes());
+    footer[8..].copy_from_slice(&lane_1.to_le_bytes());
+    Ok(footer)
+}
+
 fn parse(
     input: &[u8],
     entry_id: u32,
@@ -1874,15 +1911,31 @@ fn parse_with_metadata_policy(
         .map_err(|_| AssetError::InvalidFormat("script source size exceeds u32".to_owned()))?;
     let mut working = input.to_vec();
     working.resize(allocation_size, 0);
+    if working.len() < SC_INTEGRITY_FOOTER_SIZE {
+        return Err(AssetError::InvalidFormat(
+            "script allocation is shorter than its 16-byte integrity footer".to_owned(),
+        ));
+    }
+    let integrity_offset = working.len() - SC_INTEGRITY_FOOTER_SIZE;
+    let expected_footer = compute_sc_integrity_footer(&working[..integrity_offset])
+        .map_err(|error| AssetError::InvalidFormat(format!("invalid SC integrity domain: {error}")))?;
+    let actual_footer = &working[integrity_offset..];
+    if actual_footer != expected_footer.as_slice() {
+        return Err(AssetError::InvalidFormat(format!(
+            "SC integrity footer mismatch: stored {}, expected {}",
+            encode_hex(actual_footer),
+            encode_hex(&expected_footer)
+        )));
+    }
 
     let voice_header = parse_voice_header(&working[..VOICE_HEADER_SIZE])?;
     let allocated_script = &working[SCRIPT_BASE..];
-    if allocated_script.len() <= OPAQUE_FOOTER_SIZE {
+    if allocated_script.len() <= SC_INTEGRITY_FOOTER_SIZE {
         return Err(AssetError::InvalidFormat(
-            "script payload is shorter than its opaque 16-byte footer".to_owned(),
+            "script payload is shorter than its 16-byte integrity footer".to_owned(),
         ));
     }
-    let footer_start = allocated_script.len() - OPAQUE_FOOTER_SIZE;
+    let footer_start = allocated_script.len() - SC_INTEGRITY_FOOTER_SIZE;
     let opaque_footer = allocated_script[footer_start..].to_vec();
     let capacity_region = &allocated_script[..footer_start];
     let trailing_byte = if capacity_region.len() % 2 == 0 {
@@ -3052,7 +3105,7 @@ fn limitations() -> Vec<String> {
             .to_owned(),
         "The seven secondary-record fields are not given speculative semantic names; corpus-wide separation identifies payload addresses versus small immediate values without claiming their higher-level purpose"
             .to_owned(),
-        "The zero-filled gap before the 16-byte opaque footer is reusable payload capacity; the footer is preserved at allocation end because no located consumer explains how to regenerate it"
+        "The zero-filled gap before the 16-byte SC integrity footer is reusable payload capacity; FUN_8102B4AC verifies the footer as two seeded 64-bit additive checksums, and build regenerates it after every edit"
             .to_owned(),
         "The executable's fixed sector allocation is a capacity limit rather than a relocation limit; output larger than the allocated entry requires patching the SC sector-count table in eboot.bin.elf"
             .to_owned(),
@@ -3170,12 +3223,34 @@ mod tests {
         for word in words {
             input.extend_from_slice(&word.to_le_bytes());
         }
-        input.resize(allocation - OPAQUE_FOOTER_SIZE, 0);
-        input.extend_from_slice(&[
-            0x21, 0x67, 0x27, 0x47, 0xd9, 0x5d, 0x8e, 0x69,
-            0xee, 0xb9, 0x13, 0x86, 0xf0, 0xc2, 0x63, 0xaa,
-        ]);
+        input.resize(allocation - SC_INTEGRITY_FOOTER_SIZE, 0);
+        let footer = compute_sc_integrity_footer(&input).unwrap();
+        input.extend_from_slice(&footer);
         input
+    }
+
+    #[test]
+    fn sc_integrity_footer_matches_engine_lane_sums() {
+        let mut input = Vec::new();
+        for word in [1u32, 2, 3, 4] {
+            input.extend_from_slice(&word.to_le_bytes());
+        }
+        assert_eq!(
+            compute_sc_integrity_footer(&input).unwrap(),
+            [
+                0x12, 0x11, 0x11, 0x11, 0x13, 0x11, 0x11, 0x11,
+                0x14, 0x11, 0x11, 0x11, 0x15, 0x11, 0x11, 0x11,
+            ]
+        );
+    }
+
+    #[test]
+    fn sc_integrity_footer_changes_after_same_length_edit() {
+        let mut input = vec![0u8; 0x20];
+        let original = compute_sc_integrity_footer(&input).unwrap();
+        input[0] = 1;
+        let edited = compute_sc_integrity_footer(&input).unwrap();
+        assert_ne!(original, edited);
     }
 
     fn round_trip(input: &[u8], name: &str) -> Vec<u8> {
