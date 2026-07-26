@@ -72,6 +72,12 @@ def validate_source() -> dict:
     assert "PROJECT_SCHEMA_VERSION: u32 = 1" in manifest
     assert "const DOCUMENT_VERSION: u32 = 1" in script
     assert "const SOURCE_DOCUMENT_VERSION: u32 = 1" in script
+    assert "const ROUTING_DOCUMENT_VERSION: u32 = 1" in script
+    assert "speaker_source_glyphs" in script
+    assert "encode_span_preserving_source" in script
+    assert "unchanged_charset_alias_preserves_original_glyph_id" in script
+    assert "multi_page_dialogue_round_trips_exactly" in script
+    assert "scenario-routing.json" in script
     assert 'format!("{output_stem}.script.json")' in script
     assert 'format!("{output_stem}.script-meta.json")' in script
     decode_body = script[script.index("pub fn decode("):script.index("pub fn encode(")]
@@ -88,6 +94,9 @@ def validate_source() -> dict:
     assert "patch_sc_elf" in eboot
     assert "write_default_document" in charset and "load_document" in charset
     assert "charset.json" in pipeline
+    assert 'format!("{:05}", file.id().expect("SC ID was validated"))' in pipeline
+    assert "write_routing_document(stage, &assets)" in pipeline
+    assert "sc.cpk does not contain every engine ID 0..88" in pipeline
     assert "const DOCUMENT_VERSION: u32 = 1" in package
     assert "preserved_decoded_fnv1a64" in package
     assert "source_table_fnv1a64" in package
@@ -124,11 +133,12 @@ def validate_source() -> dict:
     for path in (ROOT / "crates").rglob("*.rs"):
         validate_delimiters(path.read_text(encoding="utf-8"), path)
     return {
-        "workspace_version": "1.0.0",
+        "workspace_version": "1.0.1",
         "schema": 1,
         "engine_package_document_version": 1,
         "script_meta_version": 1,
         "script_editable_version": 1,
+        "scenario_routing_version": 1,
         "glyphs": len(codepoints),
     }
 
@@ -155,29 +165,45 @@ def validate_corpus(root: pathlib.Path) -> dict:
     assert charset["document_version"] == 1
     assert charset["glyph_count"] == 0xE12
     assert len(charset["codepoints"]) == 0xE12
+    codepoints = [chr(int(value[2:], 16)) for value in charset["codepoints"]]
 
     manifest = json.loads((root / "rz-project.json").read_text(encoding="utf-8"))
     assert manifest["schema_version"] == 1
     assets = manifest["source"]["assets"]
     assert len(assets) == SC_COUNT
 
+    routing = json.loads((root / "scenario-routing.json").read_text(encoding="utf-8"))
+    assert routing["document_version"] == 1
+    assert routing["archive"] == "sc.cpk"
+    assert routing["startup"]["entry_id"] == 0x56
+    assert routing["startup"]["stream_id"] == 0
+    assert "navigation evidence" in routing["transition_model"]
+    assert len(routing["entries"]) == SC_COUNT
+    assert [entry["entry_id"] for entry in routing["entries"]] == list(range(SC_COUNT))
+
     total_dialogues = 0
+    total_pages = 0
+    page_histogram = {1: 0, 2: 0, 3: 0}
     total_labels = 0
     raw_nodes = 0
     samples = []
-    for index in range(SC_COUNT):
-        stem = f"{index:05d}"
+    opening_line_found = False
+    stream_counts = {}
+    for entry_id in range(SC_COUNT):
+        stem = f"{entry_id:05d}"
         editable = json.loads((root / f"{stem}.script.json").read_text(encoding="utf-8"))
         meta = json.loads((root / f"{stem}.script-meta.json").read_text(encoding="utf-8"))
+        asset = next(asset for asset in assets if asset.get("id") == entry_id)
         assert editable["document_version"] == 1
         assert meta["document_version"] == 1
-        assert editable["entry_id"] == meta["entry_id"] == index
+        assert editable["entry_id"] == meta["entry_id"] == entry_id
         assert editable["charset"] == charset["charset_id"]
         assert meta["editable"] == f"{stem}.script.json"
         assert meta["payload_capacity_bytes"] == meta["allocation_size"] - 0x2000 - 0x10
         assert len(bytes.fromhex(meta["opaque_footer_hex"])) == 0x10
-        assert assets[index]["document"] == f"{stem}.script-meta.json"
+        assert asset["document"] == f"{stem}.script-meta.json"
         assert editable.get("secondary_records", []) == []
+        stream_counts[entry_id] = editable["stream_count"]
         dialogues = [node for node in editable["nodes"] if node["kind"] == "dialogue"]
         raws = [node for node in editable["nodes"] if node["kind"] == "raw"]
         total_dialogues += len(dialogues)
@@ -185,23 +211,49 @@ def validate_corpus(root: pathlib.Path) -> dict:
         total_labels += count_secondary_labels(meta)
         for expected, node in enumerate(dialogues):
             assert node["marker_index"] == expected
-            assert isinstance(node["speaker"], str) and isinstance(node["text"], str)
+            assert isinstance(node["speaker"], str)
+            assert isinstance(node["speaker_source_glyphs"], list)
+            assert "text" not in node
+            pages = node["pages"]
+            assert 1 <= len(pages) <= 3
+            page_histogram[len(pages)] += 1
+            total_pages += len(pages)
+            for page in pages:
+                assert isinstance(page["text"], str)
+                assert isinstance(page["source_glyphs"], list)
+                assert "".join(codepoints[glyph] for glyph in page["source_glyphs"]) == page["text"]
+                if "これ、本当にラムたちが" in page["text"]:
+                    opening_line_found = entry_id == 86 and node["marker_index"] == 1
         if len(samples) < 3 and dialogues:
             samples.append({
-                "entry": index,
+                "entry": entry_id,
                 "marker": dialogues[0]["marker_index"],
                 "speaker": dialogues[0]["speaker"],
-                "text": dialogues[0]["text"],
+                "pages": [page["text"] for page in dialogues[0]["pages"]],
             })
 
     assert total_dialogues == 20686
+    assert total_pages == 37125
+    assert page_histogram == {1: 7927, 2: 9079, 3: 3680}
     assert total_labels == 119
+    assert opening_line_found
+    transitions = routing["transitions"]
+    assert len(transitions) == 94
+    for transition in transitions:
+        assert transition["opcode"] == "FFEF"
+        assert 0 <= transition["target_entry_id"] < SC_COUNT
+        assert 0 <= transition["target_stream_id"] < stream_counts[transition["target_entry_id"]]
     return {
         "entries": SC_COUNT,
         "json_files_per_entry": 2,
         "dialogue_nodes": total_dialogues,
+        "dialogue_pages": total_pages,
+        "page_histogram": page_histogram,
         "raw_nodes": raw_nodes,
         "secondary_payload_labels": total_labels,
+        "range_validated_ffef_route_candidates": len(transitions),
+        "startup_entry": routing["startup"],
+        "opening_line_recovered": opening_line_found,
         "external_skeletons": 0,
         "samples": samples,
     }

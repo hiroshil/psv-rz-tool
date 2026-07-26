@@ -5,7 +5,57 @@
     "engine_package_document_version": 1,
     "script_meta_version": 1,
     "script_editable_version": 1,
+    "scenario_routing_version": 1,
     "glyphs": 3602
+  },
+  "script_corpus": {
+    "entries": 89,
+    "json_files_per_entry": 2,
+    "dialogue_nodes": 20686,
+    "dialogue_pages": 37125,
+    "page_histogram": {
+      "1": 7927,
+      "2": 9079,
+      "3": 3680
+    },
+    "raw_nodes": 21481,
+    "secondary_payload_labels": 119,
+    "range_validated_ffef_route_candidates": 94,
+    "startup_entry": {
+      "entry_id": 86,
+      "stream_id": 0,
+      "evidence": "new-game initialization at 0x8101AD94 calls FUN_8101BEC6 with r0=0x56 and r3=0"
+    },
+    "opening_line_recovered": true,
+    "external_skeletons": 0,
+    "samples": [
+      {
+        "entry": 0,
+        "marker": 0,
+        "speaker": "スバル",
+        "pages": [
+          "レ、レム……すまん、あとは、任せ、る……。"
+        ]
+      },
+      {
+        "entry": 1,
+        "marker": 0,
+        "speaker": "スバル",
+        "pages": [
+          "……。"
+        ]
+      },
+      {
+        "entry": 2,
+        "marker": 0,
+        "speaker": "",
+        "pages": [
+          "本当はフェルトに挨拶すべきだったのだが、",
+          "疲れ果てていた俺はそれを断念。",
+          "部屋に戻るのだった。"
+        ]
+      }
+    ]
   },
   "elf": {
     "ADDPT_SECTORS": 1,

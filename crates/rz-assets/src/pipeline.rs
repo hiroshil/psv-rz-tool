@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs::{self, File};
 use std::io::{Read, Seek};
@@ -169,12 +170,29 @@ where
     } else {
         ProjectMode::Editable
     };
+    let is_sc = archive_name.eq_ignore_ascii_case("sc.cpk");
+    let mut sc_ids = BTreeSet::new();
     let mut assets = Vec::with_capacity(files.len());
 
     for (index, file) in files.iter().enumerate() {
         let extracted = reader.extract_file(file).map_err(AssetError::Archive)?;
         let order = u32::try_from(index)
             .map_err(|_| AssetError::InvalidProject("too many CPK entries".to_owned()))?;
+        if is_sc {
+            let entry_id = file.id().ok_or_else(|| {
+                AssetError::InvalidProject(format!(
+                    "sc.cpk entry at archive order {order} has no ITOC engine ID"
+                ))
+            })?;
+            let index = usize::try_from(entry_id).map_err(|_| {
+                AssetError::InvalidProject("SC entry ID exceeds usize".to_owned())
+            })?;
+            if index >= SC_ENTRY_COUNT || !sc_ids.insert(entry_id) {
+                return Err(AssetError::InvalidProject(format!(
+                    "sc.cpk has invalid or duplicate engine ID {entry_id}"
+                )));
+            }
+        }
         let context = DecodeContext {
             archive_name: &archive_name,
             directory: file.directory(),
@@ -190,11 +208,15 @@ where
             fs::write(target, extracted)?;
             AssetKind::Raw { path: relative }
         } else {
-            // All editable assets live in the project root. The entry order is
-            // the stable filename prefix; codecs add package/texture indices.
-            // This prevents hundreds of one-file directories while retaining
-            // an unambiguous mapping back to the CPK manifest.
-            let output_stem = format!("{order:05}");
+            // All editable assets live in the project root. SC filenames use
+            // the engine-visible ITOC ID because the VM addresses entries by
+            // that ID; archive order remains separate in rz-project.json.
+            // Other archive profiles retain archive order as their stable stem.
+            let output_stem = if is_sc {
+                format!("{:05}", file.id().expect("SC ID was validated"))
+            } else {
+                format!("{order:05}")
+            };
             codec::decode_editable(&extracted, &context, stage, &output_stem)?
         };
         assets.push(AssetEntry {
@@ -207,8 +229,18 @@ where
         });
     }
 
-    if !options.raw_only && archive_name.eq_ignore_ascii_case("sc.cpk") {
-        codec::charset::write_default_document(&stage.join("charset.json"))?;
+    if is_sc {
+        if sc_ids.len() != SC_ENTRY_COUNT
+            || (0..SC_ENTRY_COUNT).any(|entry_id| !sc_ids.contains(&(entry_id as u32)))
+        {
+            return Err(AssetError::InvalidProject(
+                "sc.cpk does not contain every engine ID 0..88".to_owned(),
+            ));
+        }
+        if !options.raw_only {
+            codec::charset::write_default_document(&stage.join("charset.json"))?;
+            codec::script::write_routing_document(stage, &assets)?;
+        }
     }
 
     let count = u32::try_from(files.len())

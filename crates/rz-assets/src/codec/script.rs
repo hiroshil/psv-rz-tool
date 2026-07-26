@@ -7,10 +7,11 @@ use serde::{Deserialize, Serialize};
 use crate::codec::charset;
 use crate::engine_allocations::{self, ScMetadata};
 use crate::error::AssetError;
-use crate::manifest::AssetKind;
+use crate::manifest::{AssetEntry, AssetKind};
 
 const DOCUMENT_VERSION: u32 = 1;
 const SOURCE_DOCUMENT_VERSION: u32 = 1;
+const ROUTING_DOCUMENT_VERSION: u32 = 1;
 const VOICE_HEADER_SIZE: usize = 0x80;
 const RUNTIME_BASE: usize = 0x80;
 const SCRIPT_BASE: usize = 0x2000;
@@ -73,6 +74,43 @@ pub struct ScriptSourceDocument {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScenarioRoutingDocument {
+    pub document_version: u32,
+    pub archive: String,
+    pub identity_model: String,
+    pub chronology_model: String,
+    pub transition_model: String,
+    pub startup: ScenarioRouteTarget,
+    pub entries: Vec<ScenarioEntryIdentity>,
+    pub transitions: Vec<ScenarioTransition>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScenarioRouteTarget {
+    pub entry_id: u32,
+    pub stream_id: u32,
+    pub evidence: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScenarioEntryIdentity {
+    pub entry_id: u32,
+    pub archive_order: u32,
+    pub stream_count: u32,
+    pub editable: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScenarioTransition {
+    pub source_entry_id: u32,
+    pub source_node_index: u32,
+    pub source_word_index: u32,
+    pub target_entry_id: u32,
+    pub target_stream_id: u32,
+    pub opcode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum ScriptSourceNode {
     Raw {
@@ -85,8 +123,23 @@ pub enum ScriptSourceNode {
         labels: Vec<String>,
         marker_index: u32,
         speaker: String,
-        text: String,
+        /// Original glyph IDs are machine-managed round-trip state. They are
+        /// reused only while they still decode to `speaker`, preserving charset
+        /// aliases without preventing Unicode edits.
+        speaker_source_glyphs: Vec<u16>,
+        /// Ordered screen/page bodies. Each page is terminated by FFFE in the
+        /// compiled stream; preserving the boundary is required because the
+        /// interpreter waits/advances at every terminator.
+        pages: Vec<ScriptDialoguePage>,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptDialoguePage {
+    pub text: String,
+    /// Original glyph IDs for byte-exact no-edit rebuild. If `text` changes,
+    /// the assembler ignores this field and encodes the edited Unicode string.
+    pub source_glyphs: Vec<u16>,
 }
 
 impl ScriptSourceNode {
@@ -110,13 +163,19 @@ pub enum ScriptSourceValue {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct ScriptPageRange {
+    start: usize,
+    end: usize,
+}
+
+#[derive(Debug, Clone)]
 struct ScriptTextRange {
     marker_index: u32,
     byte_offset: u32,
     speaker_start: usize,
     speaker_end: usize,
-    text_start: usize,
-    text_end: usize,
+    pages: Vec<ScriptPageRange>,
+    end: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -248,6 +307,114 @@ pub fn decode(
     Ok(AssetKind::Script {
         document: document_name,
     })
+}
+
+pub fn write_routing_document(
+    asset_directory: &Path,
+    assets: &[AssetEntry],
+) -> Result<(), AssetError> {
+    let mut documents = BTreeMap::<u32, (u32, String, ScriptSourceDocument)>::new();
+    for asset in assets {
+        let AssetKind::Script { document } = &asset.kind else {
+            return Err(AssetError::InvalidProject(format!(
+                "sc.cpk entry {} is not a script document",
+                asset.file_name
+            )));
+        };
+        let entry_id = asset.id.ok_or_else(|| {
+            AssetError::InvalidProject(format!(
+                "sc.cpk entry {} has no ITOC engine ID",
+                asset.file_name
+            ))
+        })?;
+        let metadata: ScriptDocument =
+            serde_json::from_slice(&fs::read(asset_directory.join(document))?)?;
+        let source: ScriptSourceDocument =
+            serde_json::from_slice(&fs::read(asset_directory.join(&metadata.editable))?)?;
+        if metadata.entry_id != entry_id || source.entry_id != entry_id {
+            return Err(AssetError::InvalidProject(format!(
+                "sc.cpk manifest/document entry ID mismatch for {entry_id}"
+            )));
+        }
+        if documents
+            .insert(entry_id, (asset.order, metadata.editable.clone(), source))
+            .is_some()
+        {
+            return Err(AssetError::InvalidProject(format!(
+                "sc.cpk has duplicate engine ID {entry_id}"
+            )));
+        }
+    }
+
+    let mut transitions = Vec::new();
+    for (&source_entry_id, (_, _, source)) in &documents {
+        for (node_index, node) in source.nodes.iter().enumerate() {
+            let ScriptSourceNode::Raw { words, .. } = node else {
+                continue;
+            };
+            for word_index in 0..words.len().saturating_sub(2) {
+                if words[word_index] != 0xffef {
+                    continue;
+                }
+                let target_entry_id = u32::from(words[word_index + 1]);
+                let target_stream_id = u32::from(words[word_index + 2]);
+                let Some((_, _, target)) = documents.get(&target_entry_id) else {
+                    continue;
+                };
+                if target_stream_id >= target.stream_count {
+                    continue;
+                }
+                transitions.push(ScenarioTransition {
+                    source_entry_id,
+                    source_node_index: u32::try_from(node_index).unwrap_or(u32::MAX),
+                    source_word_index: u32::try_from(word_index).unwrap_or(u32::MAX),
+                    target_entry_id,
+                    target_stream_id,
+                    opcode: "FFEF".to_owned(),
+                });
+            }
+        }
+    }
+    transitions.sort_by_key(|transition| {
+        (
+            transition.source_entry_id,
+            transition.source_node_index,
+            transition.source_word_index,
+        )
+    });
+
+    let entries = documents
+        .into_iter()
+        .map(|(entry_id, (archive_order, editable, source))| ScenarioEntryIdentity {
+            entry_id,
+            archive_order,
+            stream_count: source.stream_count,
+            editable,
+        })
+        .collect();
+    let document = ScenarioRoutingDocument {
+        document_version: ROUTING_DOCUMENT_VERSION,
+        archive: "sc.cpk".to_owned(),
+        identity_model: "entry_id is the engine-visible ITOC file ID passed unchanged to FUN_81053CB6; archive_order records CPK iteration/emission order and is not a scenario number"
+            .to_owned(),
+        chronology_model: "the scenario is a branching directed graph; there is no single total file order. Follow the proven startup and inspect FFEF route candidates"
+            .to_owned(),
+        transition_model: "each item is an FFEF word triple found in a raw node whose target entry and stream are in range. The complete opcode-width/control-flow grammar is not recovered, so this is navigation evidence rather than a guaranteed execution trace"
+            .to_owned(),
+        startup: ScenarioRouteTarget {
+            entry_id: 0x56,
+            stream_id: 0,
+            evidence: "new-game initialization at 0x8101AD94 calls FUN_8101BEC6 with r0=0x56 and r3=0"
+                .to_owned(),
+        },
+        entries,
+        transitions,
+    };
+    fs::write(
+        asset_directory.join("scenario-routing.json"),
+        serde_json::to_vec_pretty(&document)?,
+    )?;
+    Ok(())
 }
 
 pub fn encode(path: &Path) -> Result<Vec<u8>, AssetError> {
@@ -809,29 +976,57 @@ fn parse_text_ranges(
                 "primary marker {expected_index} speaker contains a non-glyph word"
             )));
         }
-        let text_start = speaker_end + 1;
-        let text_end = words[text_start..]
+
+        // FFFE is a page/line-completion boundary, not the end of the whole
+        // primary dialogue. The first page may be empty. Additional pages are
+        // recognized only when an immediately following glyph-only run ends in
+        // another FFFE; this avoids consuming arbitrary command/data words.
+        let first_page_start = speaker_end + 1;
+        let first_page_end = words[first_page_start..]
             .iter()
             .position(|value| *value == 0xfffe)
-            .map(|relative| text_start + relative)
+            .map(|relative| first_page_start + relative)
             .ok_or_else(|| AssetError::InvalidFormat(format!(
-                "primary marker {expected_index} has no FFFE text terminator"
+                "primary marker {expected_index} has no FFFE page terminator"
             )))?;
-        if words[text_start..text_end]
+        if words[first_page_start..first_page_end]
             .iter()
             .any(|value| usize::from(*value) >= charset::GLYPH_COUNT)
         {
             return Err(AssetError::InvalidFormat(format!(
-                "primary marker {expected_index} text contains a non-glyph word"
+                "primary marker {expected_index} first page contains a non-glyph word"
             )));
         }
+
+        let mut pages = vec![ScriptPageRange {
+            start: first_page_start,
+            end: first_page_end,
+        }];
+        let mut cursor = first_page_end + 1;
+        loop {
+            let page_start = cursor;
+            while cursor < words.len() && usize::from(words[cursor]) < charset::GLYPH_COUNT {
+                cursor += 1;
+            }
+            if cursor > page_start && cursor < words.len() && words[cursor] == 0xfffe {
+                pages.push(ScriptPageRange {
+                    start: page_start,
+                    end: cursor,
+                });
+                cursor += 1;
+            } else {
+                cursor = page_start;
+                break;
+            }
+        }
+
         ranges.push(ScriptTextRange {
             marker_index: u32::try_from(expected_index).unwrap(),
             byte_offset,
             speaker_start,
             speaker_end,
-            text_start,
-            text_end,
+            pages,
+            end: cursor,
         });
     }
     Ok(ranges)
@@ -879,10 +1074,9 @@ fn build_source_document(
 
     for range in &text_ranges {
         let start = usize::try_from(range.byte_offset).unwrap() / 2;
-        let end = range.text_end + 1;
         boundaries.insert(start);
-        boundaries.insert(end);
-        text_by_start.insert(start, *range);
+        boundaries.insert(range.end);
+        text_by_start.insert(start, range.clone());
     }
 
     let payload_bytes = words.len().checked_mul(2).ok_or_else(|| {
@@ -921,8 +1115,7 @@ fn build_source_document(
         }
         let node_labels = labels.remove(&start).unwrap_or_default();
         if let Some(range) = text_by_start.get(&start) {
-            let dialogue_end = range.text_end + 1;
-            if end != dialogue_end {
+            if end != range.end {
                 return Err(AssetError::InvalidFormat(format!(
                     "a relocation label splits primary dialogue {}",
                     range.marker_index
@@ -932,7 +1125,18 @@ fn build_source_document(
                 labels: node_labels,
                 marker_index: range.marker_index,
                 speaker: charset::decode_slice(&words[range.speaker_start..range.speaker_end])?,
-                text: charset::decode_slice(&words[range.text_start..range.text_end])?,
+                speaker_source_glyphs: words[range.speaker_start..range.speaker_end].to_vec(),
+                pages: range
+                    .pages
+                    .iter()
+                    .map(|page| {
+                        let source_glyphs = words[page.start..page.end].to_vec();
+                        Ok(ScriptDialoguePage {
+                            text: charset::decode_slice(&source_glyphs)?,
+                            source_glyphs,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, AssetError>>()?,
             });
         } else {
             nodes.push(ScriptSourceNode::Raw {
@@ -1008,7 +1212,8 @@ fn assemble_source_document(
             ScriptSourceNode::Dialogue {
                 marker_index,
                 speaker,
-                text,
+                speaker_source_glyphs,
+                pages,
                 ..
             } => {
                 if *marker_index != expected_marker {
@@ -1021,10 +1226,25 @@ fn assemble_source_document(
                 })?;
                 words.push(0xfff0);
                 words.push(marker);
-                words.extend(charset_map.encode_string(speaker)?);
+                if pages.is_empty() {
+                    return Err(AssetError::InvalidProject(format!(
+                        "dialogue marker {marker_index} has no pages"
+                    )));
+                }
+                words.extend(encode_span_preserving_source(
+                    speaker,
+                    speaker_source_glyphs,
+                    charset_map,
+                )?);
                 words.push(0xffff);
-                words.extend(charset_map.encode_string(text)?);
-                words.push(0xfffe);
+                for page in pages {
+                    words.extend(encode_span_preserving_source(
+                        &page.text,
+                        &page.source_glyphs,
+                        charset_map,
+                    )?);
+                    words.push(0xfffe);
+                }
                 expected_marker = expected_marker.checked_add(1).ok_or_else(|| {
                     AssetError::InvalidProject("dialogue marker count overflows".to_owned())
                 })?;
@@ -1057,6 +1277,18 @@ fn assemble_source_document(
         secondary.push(ScriptSecondaryRecord { words: values });
     }
     Ok((words, secondary))
+}
+
+fn encode_span_preserving_source(
+    text: &str,
+    source_glyphs: &[u16],
+    charset_map: &charset::CharsetMap,
+) -> Result<Vec<u16>, AssetError> {
+    if charset_map.decode_slice(source_glyphs)? == text {
+        Ok(source_glyphs.to_vec())
+    } else {
+        charset_map.encode_string(text)
+    }
 }
 
 fn parse_offset_table(script: &[u8]) -> Result<ScriptOffsetTableAnnotation, AssetError> {
@@ -1267,9 +1499,9 @@ fn limitations() -> Vec<String> {
     vec![
         "Exact compiler source cannot be recovered byte-for-byte: comments, macro names, local identifiers, symbolic labels, and the original compiler syntax are absent from the executable payload"
             .to_owned(),
-        "script.json is a lossless relocatable source-equivalent IR: dialogue is typed Unicode, control/data not yet assigned proven semantics remains in raw u16 nodes, and every engine-consumed payload address is represented by a label"
+        "script.json is a lossless relocatable source-equivalent IR: dialogue speakers and ordered FFFE-delimited pages are typed Unicode, control/data not yet assigned proven semantics remains in raw u16 nodes, and every engine-consumed payload address is represented by a label"
             .to_owned(),
-        "Speaker and dialogue may change encoded length; build regenerates the stream table, primary marker table, and payload-address fields in secondary records"
+        "Speaker and dialogue pages may change encoded length; build preserves page boundaries and regenerates the stream table, primary marker table, and payload-address fields in secondary records"
             .to_owned(),
         "The seven secondary-record fields are not given speculative semantic names; corpus-wide separation identifies payload addresses versus small immediate values without claiming their higher-level purpose"
             .to_owned(),
@@ -1446,12 +1678,12 @@ mod tests {
         let offsets = derive_primary_offsets(&words).unwrap();
         let mut source = build_source_document(7, &words, &table, &offsets, &[]).unwrap();
         let dialogue = source.nodes.iter_mut().find_map(|node| match node {
-            ScriptSourceNode::Dialogue { speaker, text, .. } => Some((speaker, text)),
+            ScriptSourceNode::Dialogue { speaker, pages, .. } => Some((speaker, pages)),
             _ => None,
         }).unwrap();
         assert_eq!(dialogue.0, "スバル");
-        assert_eq!(dialogue.1, "レム");
-        *dialogue.1 = "レムム".to_owned();
+        assert_eq!(dialogue.1[0].text, "レム");
+        dialogue.1[0].text = "レムム".to_owned();
         let (rebuilt, secondary) =
             assemble_source_document(7, &source, charset::default_map()).unwrap();
         assert!(secondary.is_empty());
@@ -1459,6 +1691,81 @@ mod tests {
         assert_eq!(relocated.entries[0].offset, 8);
         assert_eq!(relocated.entries[1].offset, 28);
         assert_eq!(rebuilt.len(), words.len() + 1);
+    }
+
+    #[test]
+    fn multi_page_dialogue_round_trips_exactly() {
+        let words = vec![
+            4, 0,
+            0xfff0, 0, 0x013b, 0xffff,
+            0x016e, 0x0162, 0xfffe,
+            0x013b, 0xfffe,
+            0x016e, 0xfffe,
+            0xfef4, 0xffff,
+        ];
+        let table = parse_offset_table(&words_to_bytes(&words)).unwrap();
+        let offsets = derive_primary_offsets(&words).unwrap();
+        let source = build_source_document(86, &words, &table, &offsets, &[]).unwrap();
+        let pages = source.nodes.iter().find_map(|node| match node {
+            ScriptSourceNode::Dialogue { pages, .. } => Some(pages),
+            _ => None,
+        }).unwrap();
+        assert_eq!(
+            pages.iter().map(|page| page.text.as_str()).collect::<Vec<_>>(),
+            vec!["レム", "ス", "レ"]
+        );
+        let (rebuilt, secondary) =
+            assemble_source_document(86, &source, charset::default_map()).unwrap();
+        assert!(secondary.is_empty());
+        assert_eq!(rebuilt, words);
+    }
+
+    #[test]
+    fn unchanged_charset_alias_preserves_original_glyph_id() {
+        let words = vec![
+            4, 0,
+            0xfff0, 0, 0xffff,
+            0x001b, 0xfffe,
+            0xfef4, 0xffff,
+        ];
+        let table = parse_offset_table(&words_to_bytes(&words)).unwrap();
+        let offsets = derive_primary_offsets(&words).unwrap();
+        let source = build_source_document(86, &words, &table, &offsets, &[]).unwrap();
+        let pages = source.nodes.iter().find_map(|node| match node {
+            ScriptSourceNode::Dialogue { pages, .. } => Some(pages),
+            _ => None,
+        }).unwrap();
+        assert_eq!(pages[0].text.as_str(), "ー");
+        assert_eq!(pages[0].source_glyphs.as_slice(), &[0x001b]);
+        let (rebuilt, _) =
+            assemble_source_document(86, &source, charset::default_map()).unwrap();
+        assert_eq!(rebuilt, words);
+    }
+
+    #[test]
+    fn glyph_run_without_fffe_remains_raw() {
+        let words = vec![
+            4, 0,
+            0xfff0, 0, 0xffff,
+            0x016e, 0xfffe,
+            0x013b, 0xffff, 0xfef4, 0xffff,
+        ];
+        let table = parse_offset_table(&words_to_bytes(&words)).unwrap();
+        let offsets = derive_primary_offsets(&words).unwrap();
+        let source = build_source_document(5, &words, &table, &offsets, &[]).unwrap();
+        let dialogue = source.nodes.iter().find_map(|node| match node {
+            ScriptSourceNode::Dialogue { pages, .. } => Some(pages),
+            _ => None,
+        }).unwrap();
+        assert_eq!(dialogue.len(), 1);
+        assert_eq!(dialogue[0].text, "レ");
+        assert!(source.nodes.iter().any(|node| matches!(
+            node,
+            ScriptSourceNode::Raw { words, .. }
+                if words.starts_with(&[0x013b, 0xffff])
+        )));
+        let (rebuilt, _) = assemble_source_document(5, &source, charset::default_map()).unwrap();
+        assert_eq!(rebuilt, words);
     }
 
     #[test]

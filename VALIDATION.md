@@ -26,7 +26,8 @@ python tools/validate_engine_assets.py \
 The source checks require:
 
 - workspace version `1.0.0`;
-- project and rebuild-authoritative document versions `1`;
+- project schema, script metadata, routing and non-script document versions `1`;
+- editable script document version `1`, with ordered pages and source glyph IDs;
 - no compatibility flag/field and no migration scripts;
 - exactly one analysis Markdown file, `ENGINE_ANALYSIS.md`;
 - source-aware BC encoding, automatic P4/P8 palette rebuild, incremental GZIP
@@ -69,11 +70,14 @@ For `addpt.cpk`, `bk.cpk`, `bsf.cpk` and `pt.cpk`:
 For `sc.cpk`:
 
 1. no-edit rebuild of all 89 entries;
-2. variable-length dialogue growth and shrinkage;
-3. relocation of stream, primary and secondary address classes;
-4. growth beyond stock allocation with companion ELF output;
-5. re-open the generated ELF and verify all three patched regions;
-6. exercise scenes using changed entries.
+2. verify 20,686 dialogues and 37,125 ordered pages;
+3. verify entry ID 86, stream 0 as the startup route and all range-validated `FFEF` route candidates;
+4. verify unchanged duplicate glyph aliases remain byte-identical;
+5. variable-length dialogue growth and shrinkage;
+6. relocation of stream, primary and secondary address classes;
+7. growth beyond stock allocation with companion ELF output;
+8. re-open the generated ELF and verify all three patched regions;
+9. exercise scenes using changed entries.
 
 For `lt.bin`:
 

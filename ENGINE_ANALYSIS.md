@@ -139,7 +139,7 @@ The executable contains sector-count tables independent of CPK metadata:
 | `bsf.cpk` | `0x810faf30` | 294 | 8 | `+4`, `u16` |
 
 Rebuilt logical data must fit the corresponding fixed allocation unless the
-specific engine table is patched. Stable 1.0 patches only the analyzed SC
+specific engine table is patched. `rz-tool` patches only the analyzed SC
 allocation path. ADDPT/PT/BK/BSF output exceeding stock allocation is rejected.
 
 ## 5. Common entry reader and allocation model
@@ -213,7 +213,7 @@ Directly consumed fields include:
 | `+0x3c` | destination stride per block |
 
 Bytes with incomplete producer semantics remain visible in package JSON through
-preserved layout fields. Stable 1.0 does not hide them in a skeleton file.
+preserved layout fields. `rz-tool` does not hide them in a skeleton file.
 
 ### 6.3 GZIP block wrapper: `FUN_81034e4a`
 
@@ -338,7 +338,7 @@ baseline. It is not used to suppress valid edits.
 
 ### 8.3 Build algorithm
 
-Stable 1.0 performs:
+`rz-tool` performs:
 
 1. require schema/document version 1;
 2. validate archive profile, allocation, header, descriptor, geometry, format,
@@ -522,19 +522,68 @@ range. Directly observed behavior includes:
 Unclassified commands and embedded tables remain exact raw `u16` nodes. Stable
 1.0 does not assign names or operand widths without evidence.
 
-### 10.6 Text grammar
+### 10.6 Dialogue page grammar
 
 The call chain
-`FUN_8100132c → FUN_81006a86 → FUN_8104e0a6 → FUN_8104df94` proves:
+`FUN_8100132c → FUN_81006a86 → FUN_8104e0a6 → FUN_8104df94` and the complete
+89-entry corpus establish:
 
 ```text
-fff0 marker_index speaker_glyph* ffff dialogue_glyph* fffe
+fff0 marker_index
+speaker_glyph*
+ffff
+page_0_glyph* fffe
+[page_1_glyph+ fffe]
+[page_2_glyph+ fffe]
 ```
 
-Corpus validation found 20,686 primary markers with this exact grammar and no
-embedded control words inside the speaker/body glyph spans.
+`FFFE` completes one displayed page; it does not necessarily end the primary
+dialogue record. The corpus contains 20,686 primary markers and 37,125 pages:
+7,927 one-page dialogues, 9,079 two-page dialogues and 3,680 three-page
+dialogues. No observed dialogue has more than three pages. Continuation parsing
+accepts only an immediately following glyph-only run terminated by another
+`FFFE`; a glyph run followed by `FFFF` or another control remains raw data.
 
-### 10.7 Primary marker table
+This distinction explains the previously missing opening line. In engine entry
+86, marker 1 contains the first page `……レム、レム。`, followed by the pages
+`これ、本当にラムたちが` and `言わなくてはいけないの？`. Treating the first
+`FFFE` as the end of the whole dialogue left the latter pages in a raw node.
+
+### 10.7 Entry identity and scenario routing
+
+`FUN_81053cb6` accepts an entry ID below `0x59`, indexes the SC sector table with
+that same ID and passes it unchanged to the fixed-sector reader. It does not
+translate archive position into another scenario number.
+
+The new-game initialization at `0x8101ad94` loads:
+
+```text
+r0 = 0x56  scenario entry ID 86
+r3 = 0x00  local stream ID 0
+bl FUN_8101bec6
+```
+
+Therefore engine entry 86 is the main prologue root even though its numeric ID
+is not zero. Opcode `FFEF` stores its first operand as the next entry ID and its
+second operand as the next local stream ID; the loader later passes that entry
+ID to `FUN_81053cb6`. Choices and flags produce a branching directed graph, not
+a single chronological file sequence.
+
+The project contract consequently keeps two independent values:
+
+- `id`: engine-visible ITOC ID and SC filename prefix;
+- `order`: CPK iteration/emission order retained for archive reconstruction.
+
+`scenario-routing.json` records the proven root, the order/ID mapping and every
+`FFEF` word triple whose target entry and stream are valid. It is derived
+navigation metadata; build does not consume it and never renumbers engine IDs.
+
+The `nodes` array remains in physical payload order. Execution can begin at any
+`stream_XXXX` label and branch within or across entries, so sorting dialogue by
+filename, node index or `marker_index` would manufacture a false chronology.
+`marker_index` identifies the entry-local primary offset table only.
+
+### 10.8 Primary marker table
 
 The runtime table contains byte offsets of the ordered marker chain:
 
@@ -548,7 +597,7 @@ fff0 0002
 The assembler derives the table after emitting the new payload. It does not copy
 stale offsets from extraction.
 
-### 10.8 Secondary records
+### 10.9 Secondary records
 
 The corpus contains 47 records of seven `u32` words, 329 fields total:
 
@@ -560,14 +609,15 @@ Address fields become symbolic labels in machine-managed metadata and are
 resolved after editable nodes are emitted. Higher-level field names remain
 unknown.
 
-### 10.9 Relocatable source-equivalent IR
+### 10.10 Relocatable source-equivalent IR
 
 The original compiler input is not recoverable: comments, macros, identifier
-names and source syntax are absent. Stable 1.0 emits the strongest lossless
+names and source syntax are absent. `rz-tool` emits the strongest lossless
 substitute:
 
 - stream labels;
-- typed Unicode dialogue nodes;
+- typed Unicode dialogue nodes with ordered `FFFE` pages;
+- original glyph-ID vectors for byte-exact preservation of charset aliases;
 - exact raw `u16` nodes;
 - symbolic labels for all engine-consumed payload addresses;
 - machine-managed secondary relocation records.
@@ -578,14 +628,22 @@ A dialogue node assembles as:
 fff0 marker_index
 speaker glyphs
 ffff
-text glyphs
+page 0 glyphs
 fffe
+[page 1 glyphs
+fffe]
+[page 2 glyphs
+fffe]
 ```
 
-Variable-length edits are supported because stream, primary and classified
-secondary addresses are regenerated rather than patched at old offsets.
+Unchanged speaker/page spans reuse their original glyph IDs when those IDs still
+decode to the visible Unicode. This preserves duplicate charset aliases such as
+the two IDs mapped to `ー`; edited spans are encoded through the selected
+charset. Variable-length edits are supported because stream, primary and
+classified secondary addresses are regenerated rather than patched at old
+offsets.
 
-### 10.10 Allocation tail
+### 10.11 Allocation tail
 
 The supplied entries follow:
 
@@ -622,7 +680,7 @@ advances by `ceil(primary_count / 8)`, consistent with bitset storage.
 ### 11.2 Patch site `0x8111344c`
 
 The SC sector table consists of 89 `(u16 start_sector, u16 sector_count)`
-records. Stable 1.0 validates the cumulative stock layout and recomputes both
+records. `rz-tool` validates the cumulative stock layout and recomputes both
 fields from rebuilt entry allocations.
 
 ### 11.3 Patch site `0x810f9b1c`
@@ -716,7 +774,7 @@ At least three incompatible consumer families are direct evidence:
    offset tables, decompresses a selected record, and copies 50 rows of
    `0x160` bytes into a destination stride of `0x200`.
 
-A universal package parser would corrupt at least two families. Stable 1.0
+A universal package parser would corrupt at least two families. `rz-tool`
 therefore supports explicit raw extraction/rebuild only. Editable PR requires a
 separate proven encoder for every slot family.
 
