@@ -1,0 +1,17 @@
+[workspace]
+members = [
+    "crates/rz-assets",
+    "crates/rz-tool",
+]
+resolver = "2"
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+authors = ["rz-tool contributors"]
+license = "MIT OR Apache-2.0"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true

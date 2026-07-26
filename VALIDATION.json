@@ -1,0 +1,22 @@
+{
+  "source": {
+    "workspace_version": "1.0.0",
+    "schema": 1,
+    "engine_package_document_version": 1,
+    "script_meta_version": 1,
+    "script_editable_version": 1,
+    "glyphs": 3602
+  },
+  "elf": {
+    "ADDPT_SECTORS": 1,
+    "PT_SECTORS": 23,
+    "SC_SECTORS": 89,
+    "BK_SECTORS": 326,
+    "BSF_SECTORS": 294,
+    "stock_sc_total_sectors": 1394,
+    "stock_sc_buffer": 131072,
+    "metadata_records": 89,
+    "patch_sites_mapped": 3
+  },
+  "capstone_report_exact": true
+}

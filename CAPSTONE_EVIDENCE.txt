@@ -1,0 +1,793 @@
+[resource records @ 0x8112a2e0]
+ 0: vo.awb     count=0x4bd0
+ 1: sc.cpk     count=0x59
+ 2: addpt.cpk  count=0x1
+ 3: snd.cpk    count=0x1b0
+ 4: bk.cpk     count=0x146
+ 5: bsf.cpk    count=0x126
+ 6: pt.cpk     count=0x17
+ 7: lt.bin     count=0x1
+ 8: pr.bin     count=0x1
+ 9: se.awb     count=0x1
+
+[standalone resource records @ 0x81129e58]
+0: id=7 size=0xfd800 sectors=0x1fb loaded=0xfd800 destination=0x00000000
+1: id=8 size=0x105f800 sectors=0x20bf loaded=0x105f800 destination=0x00000000
+2: id=9 size=0x7c800 sectors=0xf9 loaded=0x7c800 destination=0x00000000
+
+[executable sector tables]
+addpt.cpk: address=0x811122dc records=1 stride=4 sector_field=+2 sha256=b98f461f1da74c0c82d6c977f606436221469d77e91de6b369eee6d3c6369c59
+  501
+pt.cpk: address=0x81113394 records=23 stride=4 sector_field=+2 sha256=94397f5a230c0d78a59fa64e91e0946fd68314a88ace8850d0bf5b9262fc201b
+  1069 1 391 518 525 2103 488 1388 1581 6 7 106 57 1 8 62
+  488 231 131 2 23 13 2
+sc.cpk: address=0x8111344c records=89 stride=4 sector_field=+2 sha256=b1d7f56127e780e9152778f4f358be52ca549d00e16da45fa3ab5ed596a0b21e
+  8 10 10 12 12 14 10 10 36 12 18 14 36 14 38 20
+  22 26 24 26 10 20 34 18 18 38 20 20 20 30 40 18
+  22 10 10 12 22 16 16 14 14 12 20 16 14 30 16 22
+  12 10 18 12 20 22 24 10 10 10 8 10 10 8 10 12
+  12 10 10 8 10 10 8 8 8 24 10 8 8 10 8 8
+  10 8 8 8 10 10 30 14 6
+bk.cpk: address=0x810fa500 records=326 stride=8 sector_field=+4 sha256=120f90d08d802d1e17e9f005d782080f5090738babdb030ad5c70de0a4677036
+  427 554 448 442 409 405 418 463 511 511 510 366 365 365 516 9
+  531 530 529 448 595 324 320 565 363 409 479 554 554 554 556 378
+  458 517 535 530 537 521 601 257 263 437 436 438 437 432 433 553
+  633 633 531 531 539 543 545 521 451 398 552 410 635 515 518 513
+  518 515 494 390 389 556 568 431 583 410 377 592 469 347 535 411
+  426 402 9 422 454 639 639 510 510 510 459 512 480 541 541 529
+  423 422 423 393 626 560 526 510 365 415 415 415 563 469 495 494
+  452 435 434 496 419 305 518 527 598 618 408 483 531 486 522 348
+  366 380 346 389 400 311 331 543 99 475 543 394 430 455 430 378
+  434 415 357 264 612 475 637 319 629 544 400 615 528 627 342 522
+  424 540 559 488 508 608 555 617 534 467 537 543 532 505 542 492
+  559 603 512 606 556 502 516 637 462 558 518 367 568 528 377 426
+  448 319 467 513 320 631 617 563 719 726 509 617 623 454 484 388
+  462 516 531 416 718 671 546 594 603 518 642 576 498 412 382 338
+  452 577 614 420 636 477 618 628 602 522 515 457 313 345 347 292
+  389 388 389 389 388 273 329 374 418 428 344 406 426 399 9 9
+  258 283 310 257 303 306 263 310 657 628 426 89 89 89 89 89
+  89 397 294 375 351 277 230 269 312 459 423 277 187 325 516 518
+  558 373 541 366 229 324 323 240 433 293 430 277 220 516 388 522
+  387 566 565 566 568 566 89 568 89 566 566 566 566 566 89 564
+  565 20 13 17 549 546
+bsf.cpk: address=0x810faf30 records=294 stride=8 sector_field=+4 sha256=a7977fdf15ea2dcf62d28ee37c0767624253e45fe1f1c8ec7808327584a7c4b0
+  88 78 78 89 78 78 85 75 80 86 75 81 58 58 62 59
+  60 63 55 56 59 56 58 60 53 52 63 54 53 63 53 53
+  52 58 54 52 59 53 84 91 81 86 93 87 79 90 82 81
+  88 84 60 66 72 61 67 74 66 74 79 67 74 81 88 85
+  83 89 85 83 70 72 71 71 72 71 73 77 72 74 78 75
+  64 65 63 66 66 65 73 67 74 74 68 76 69 66 69 70
+  68 71 62 50 62 50 24 19 86 96 89 99 80 83 84 86
+  110 110 111 114 120 118 118 121 113 113 113 116 124 121 121 124
+  74 77 74 77 87 83 88 83 88 70 91 73 81 82 84 85
+  91 91 91 91 82 82 43 43 91 93 62 64 64 62 61 64
+  56 50 58 56 50 57 46 50 50 46 50 51 42 44 44 41
+  43 43 45 44 48 45 44 48 44 42 40 44 41 40 42 40
+  55 63 55 53 60 56 51 52 52 49 53 50 50 50 51 48
+  48 50 47 48 49 45 46 47 81 70 72 77 71 70 51 48
+  46 49 47 46 65 62 59 62 62 57 50 50 46 51 50 45
+  52 50 56 52 49 57 51 48 51 51 47 52 24 19 24 19
+  11 10 74 68 71 69 62 59 63 60 115 117 117 119 66 59
+  66 59 63 69 63 65 57 51 58 50 64 66 63 64 91 91
+  72 72 43 43 60 60
+
+[SC global metadata table @ 0x810f9b1c]
+00: streams=0+3 primary=0+69 secondary=0+0
+01: streams=3+3 primary=9+89 secondary=0+0
+02: streams=6+3 primary=21+78 secondary=0+0
+03: streams=9+3 primary=31+117 secondary=0+0
+04: streams=12+3 primary=46+115 secondary=0+0
+05: streams=15+2 primary=61+160 secondary=0+0
+06: streams=17+3 primary=81+115 secondary=0+0
+07: streams=20+3 primary=96+100 secondary=0+0
+08: streams=23+25 primary=109+683 secondary=0+4
+09: streams=48+10 primary=195+170 secondary=4+2
+10: streams=58+12 primary=217+313 secondary=6+2
+11: streams=70+6 primary=257+193 secondary=8+1
+12: streams=76+22 primary=282+683 secondary=9+2
+13: streams=98+7 primary=368+186 secondary=11+1
+14: streams=105+24 primary=392+689 secondary=12+3
+15: streams=129+2 primary=479+276 secondary=15+0
+16: streams=131+6 primary=514+347 secondary=15+1
+17: streams=137+25 primary=558+397 secondary=16+3
+18: streams=162+11 primary=608+407 secondary=19+1
+19: streams=173+13 primary=659+485 secondary=20+2
+20: streams=186+2 primary=720+127 secondary=22+0
+21: streams=188+7 primary=736+325 secondary=22+1
+22: streams=195+23 primary=777+609 secondary=23+3
+23: streams=218+2 primary=854+271 secondary=26+0
+24: streams=220+2 primary=888+265 secondary=26+0
+25: streams=222+21 primary=922+687 secondary=26+2
+26: streams=243+6 primary=1008+320 secondary=28+1
+27: streams=249+5 primary=1048+308 secondary=29+0
+28: streams=254+18 primary=1087+337 secondary=29+2
+29: streams=272+13 primary=1130+532 secondary=31+1
+30: streams=285+25 primary=1197+721 secondary=32+3
+31: streams=310+2 primary=1288+277 secondary=35+0
+32: streams=312+5 primary=1323+377 secondary=35+0
+33: streams=317+6 primary=1371+118 secondary=35+1
+34: streams=323+2 primary=1386+122 secondary=36+0
+35: streams=325+2 primary=1402+155 secondary=36+0
+36: streams=327+14 primary=1422+388 secondary=36+0
+37: streams=341+10 primary=1471+280 secondary=36+1
+38: streams=351+7 primary=1506+285 secondary=37+1
+39: streams=358+2 primary=1542+200 secondary=38+0
+40: streams=360+2 primary=1567+194 secondary=38+0
+41: streams=362+2 primary=1592+145 secondary=38+0
+42: streams=364+7 primary=1611+343 secondary=38+1
+43: streams=371+5 primary=1654+248 secondary=39+0
+44: streams=376+4 primary=1685+209 secondary=39+0
+45: streams=380+12 primary=1712+620 secondary=39+2
+46: streams=392+2 primary=1790+283 secondary=41+0
+47: streams=394+2 primary=1826+413 secondary=41+0
+48: streams=396+2 primary=1878+140 secondary=41+0
+49: streams=398+2 primary=1896+92 secondary=41+0
+50: streams=400+2 primary=1908+306 secondary=41+0
+51: streams=402+2 primary=1947+153 secondary=41+0
+52: streams=404+7 primary=1967+370 secondary=41+1
+53: streams=411+2 primary=2014+404 secondary=42+0
+54: streams=413+12 primary=2065+429 secondary=42+0
+55: streams=425+2 primary=2119+85 secondary=42+0
+56: streams=427+2 primary=2130+104 secondary=42+0
+57: streams=429+2 primary=2143+89 secondary=42+0
+58: streams=431+2 primary=2155+69 secondary=42+0
+59: streams=433+2 primary=2164+114 secondary=42+0
+60: streams=435+2 primary=2179+107 secondary=42+0
+61: streams=437+2 primary=2193+78 secondary=42+0
+62: streams=439+2 primary=2203+119 secondary=42+0
+63: streams=441+2 primary=2218+132 secondary=42+0
+64: streams=443+2 primary=2235+140 secondary=42+0
+65: streams=445+2 primary=2253+120 secondary=42+0
+66: streams=447+2 primary=2268+114 secondary=42+0
+67: streams=449+2 primary=2283+97 secondary=42+0
+68: streams=451+2 primary=2296+100 secondary=42+0
+69: streams=453+3 primary=2309+94 secondary=42+0
+70: streams=456+3 primary=2321+73 secondary=42+0
+71: streams=459+3 primary=2331+77 secondary=42+0
+72: streams=462+3 primary=2341+60 secondary=42+0
+73: streams=465+26 primary=2349+430 secondary=42+0
+74: streams=491+3 primary=2403+89 secondary=42+0
+75: streams=494+3 primary=2415+62 secondary=42+0
+76: streams=497+3 primary=2423+81 secondary=42+0
+77: streams=500+3 primary=2434+93 secondary=42+0
+78: streams=503+3 primary=2446+81 secondary=42+0
+79: streams=506+3 primary=2457+86 secondary=42+0
+80: streams=509+3 primary=2468+81 secondary=42+0
+81: streams=512+3 primary=2479+43 secondary=42+0
+82: streams=515+3 primary=2485+82 secondary=42+0
+83: streams=518+3 primary=2496+68 secondary=42+0
+84: streams=521+3 primary=2505+102 secondary=42+0
+85: streams=524+3 primary=2518+97 secondary=42+0
+86: streams=527+6 primary=2531+492 secondary=42+1
+87: streams=533+184 primary=2593+284 secondary=43+3
+88: streams=717+6 primary=2629+18 secondary=46+1
+These records provide global bases and expected local counts; FUN_81053CB6 still loads every actual script payload from sc.cpk.
+
+[runtime texture descriptors]
+stream-disabled 0x81129ef0: size=0x400 ptr=0x0 palette=0x0 type=0x60000000 format=0x0c001000 16x16
+bk-stream       0x81129f20: size=0x220000 ptr=0x0 palette=0x0 type=0x60000000 format=0x0c001000 1024x544
+bsf-group-0     0x81129f50: size=0x320000 ptr=0x0 palette=0x0 type=0x60000000 format=0x0c001000 1024x800
+bsf-group-1     0x81129f80: size=0x300000 ptr=0x0 palette=0x0 type=0x60000000 format=0x0c001000 1024x768
+bsf-group-2     0x81129fb0: size=0x300000 ptr=0x0 palette=0x0 type=0x60000000 format=0x0c001000 1024x768
+bsf-group-3     0x81129fe0: size=0x300000 ptr=0x0 palette=0x0 type=0x60000000 format=0x0c001000 1024x768
+bk-loader-a     0x8112b8a8: size=0x220000 ptr=0x0 palette=0x0 type=0x60000000 format=0x0c001000 1024x544
+bk-loader-b     0x8112b8d8: size=0x220000 ptr=0x0 palette=0x0 type=0x60000000 format=0x0c001000 1024x544
+
+[pr.bin slot offsets @ 0x81113308]
+ 0: 0x00000000
+ 1: 0x00000100
+ 2: 0x00000200
+ 3: 0x00000300
+ 4: 0x00000400
+ 5: 0x00000500
+ 6: 0x00001d00
+ 7: 0x0003b500
+ 8: 0x00052d00
+ 9: 0x000c2500
+10: 0x000c4500
+11: 0x000c6500
+12: 0x0010ad00
+13: 0x0014f500
+14: 0x00193d00
+15: 0x001d8500
+16: 0x002d2d00
+17: 0x0032dd00
+18: 0x003bad00
+19: 0x003edd00
+20: 0x003f0d00
+21: 0x00454d00
+22: 0x00482d00
+23: 0x004b3500
+24: 0x004ddd00
+25: 0x00512500
+26: 0x00546500
+27: 0x00576500
+28: 0x005abd00
+29: 0x005e2d00
+30: 0x0061cd00
+31: 0x006ce500
+32: 0x007f4d00
+33: 0x00bc5550
+34: 0x00e46190
+
+[direct caller census]
+entry_reader 0x81053b7a:
+  0x8104d5cc FUN_8104d4b4
+  0x8104d6f6 FUN_8104d652
+  0x81053cd4 FUN_81053cb6
+  0x81053dae FUN_81053cda
+  0x81053f50 FUN_81053ed6
+  0x8105413e FUN_8105403e
+  0x810543fc FUN_81054260
+package_loader 0x81053694:
+  0x810537ca FUN_81053788
+  0x8105393c FUN_810538ec
+  0x810539e6 FUN_81053944
+  0x81053ddc FUN_81053cda
+  0x81053f7c FUN_81053ed6
+  0x81053fe6 FUN_81053fa6
+  0x81054448 FUN_81054260
+bundle_loader 0x81053fa6:
+  0x8104d5f8 FUN_8104d4b4
+  0x8104d728 FUN_8104d652
+  0x8105418e FUN_8105403e
+metadata_installer 0x810225fa:
+  0x81005ca6 FUN_81005c8c
+  0x8100aea2 FUN_8100ae84
+  0x8101d900 FUN_8101d850
+  0x8101d90e FUN_8101d850
+  0x810228a8 FUN_81022852
+  0x8102813a FUN_810280e8
+  0x8104d322 FUN_8104d284
+  0x8105374c FUN_81053694
+  0x81053eba FUN_81053e80
+texture_copy 0x8102fdca:
+  0x81006796 FUN_81006764
+  0x81006860 FUN_8100679e
+  0x810068ae FUN_8100687c
+  0x81006904 FUN_810068c2
+  0x8100696a FUN_8100690c
+  0x81006bfc FUN_81006bc8
+  0x81006c6e FUN_81006c04
+  0x81006ce6 FUN_81006c76
+  0x81006d7a FUN_81006c76
+  0x8100710c FUN_810070a0
+  0x8100aebe FUN_8100ae84
+  0x8100b008 FUN_8100af82
+  0x8101ff78 FUN_8101fea6
+  0x810228ce FUN_81022852
+  0x81028160 FUN_810280e8
+  0x8103584a FUN_8103581e
+  0x8103b316 FUN_8103b1c8
+  0x8103f124 FUN_8103effa
+  0x8104d38c FUN_8104d284
+  0x8104dd3a FUN_8104dc78
+  0x81053764 FUN_81053694
+  0x81053dfc FUN_81053cda
+  0x81053f9c FUN_81053f8e
+  0x8105445e FUN_81054260
+palette_copy 0x8102fd82:
+  0x8100aece FUN_8100ae84
+  0x8100b020 FUN_8100af82
+  0x8101ff9e FUN_8101fea6
+  0x810228e4 FUN_81022852
+  0x81028176 FUN_810280e8
+  0x8104d27c FUN_8104d1f8
+  0x8105376e FUN_81053694
+  0x81053e08 FUN_81053cda
+lt_renderer 0x8102d194:
+  0x8102d7a0 FUN_8102d78c
+lt_wrapper 0x8102d78c:
+script_lookup 0x810003b2:
+  0x81002dac FUN_8100132c
+  0x81002ece FUN_8100132c
+  0x81009cb4 FUN_81009b84
+  0x8100a0fe FUN_81009ee4
+  0x8100a2fe FUN_81009ee4
+  0x8100a464 FUN_81009ee4
+  0x8100bf7e FUN_8100bf2a
+  0x81016b48 FUN_81016b10
+  0x81016c30 FUN_81016ba4
+  0x81016cbe FUN_81016c42
+  0x81016d18 FUN_81016ce0
+  0x81016d82 FUN_81016d3a
+  0x81016e32 FUN_81016de2
+  0x81016eb2 FUN_81016e42
+  0x81016f2a FUN_81016ec2
+  0x81017032 FUN_81016f3a
+  0x8101723a FUN_81017208
+  0x81017292 FUN_81017274
+  0x81017cdc FUN_81017c68
+bsf_step 0x8101fea6:
+  0x8102025e FUN_8102021a
+  0x81020484 FUN_81020316
+
+[absolute-address materialization census]
+lt.bin base pointer global 0x811b98e4:
+  function=0x81006d82 FUN_81006d82 movw=0x81006e44 movt=0x81006e4c
+  function=0x8101a9c0 FUN_8101a9c0 movw=0x8101aa70 movt=0x8101aa74
+  function=0x8101b504 FUN_8101b504 movw=0x8101b51e movt=0x8101b522
+  function=0x810280e8 FUN_810280e8 movw=0x8102818e movt=0x81028198
+  function=0x8103ecf6 FUN_8103ecf6 movw=0x8103edd0 movt=0x8103edda
+  function=0x810441cc FUN_810441cc movw=0x81044386 movt=0x81044390
+  function=0x81045eca FUN_81045eca movw=0x810461d6 movt=0x810461e2
+  function=0x81048be6 FUN_81048be6 movw=0x81048c7c movt=0x81048c86
+  function=0x8104de8c FUN_8104de8c movw=0x8104dee4 movt=0x8104def0
+  function=0x8104e0c4 FUN_8104e0c4 movw=0x8104e13e movt=0x8104e146
+  function=0x8104e182 FUN_8104e182 movw=0x8104e1fc movt=0x8104e204
+  function=0x8104e37e FUN_8104e37e movw=0x8104e3b0 movt=0x8104e3b4
+  function=0x8104e404 FUN_8104e404 movw=0x8104e678 movt=0x8104e67c
+  function=0x8104f6b6 FUN_8104f6b6 movw=0x8104f74c movt=0x8104f750
+glyph renderer dispatch table base 0x8110c46c:
+  function=0x81006d82 FUN_81006d82 movw=0x81006e48 movt=0x81006e52
+  function=0x8101a6ea FUN_8101a6ea movw=0x8101a92e movt=0x8101a936
+  function=0x8101a96c FUN_8101a96c movw=0x8101a972 movt=0x8101a97a
+  function=0x8101a9c0 FUN_8101a9c0 movw=0x8101aaee movt=0x8101aafa
+  function=0x8101a9c0 FUN_8101a9c0 movw=0x8101aba2 movt=0x8101abaa
+  function=0x81022852 FUN_81022852 movw=0x810228d4 movt=0x810228d8
+  function=0x810280e8 FUN_810280e8 movw=0x81028166 movt=0x8102816a
+  function=0x8104db86 FUN_8104db86 movw=0x8104dc00 movt=0x8104dc06
+  function=0x8104de8c FUN_8104de8c movw=0x8104deec movt=0x8104def6
+  function=0x8104e0c4 FUN_8104e0c4 movw=0x8104e142 movt=0x8104e14c
+  function=0x8104e182 FUN_8104e182 movw=0x8104e200 movt=0x8104e20a
+  function=0x8104e37e FUN_8104e37e movw=0x8104e3ba movt=0x8104e3be
+  function=0x8104e404 FUN_8104e404 movw=0x8104e682 movt=0x8104e686
+The lt.bin list exhausts direct MOVW/MOVT materializations in mapped code. Manual data-flow audit classifies FUN_8101b504 as allocation, FUN_8101a9c0 as loading, and the remaining references as glyph-renderer or string-raster paths using the same 24px family.
+
+[lt renderer function-pointer table @ 0x8110c470]
+0: 0x8102d78d -> Thumb target 0x8102d78c
+1: 0x8102d195 -> Thumb target 0x8102d194
+2: 0x8102d7a9 -> Thumb target 0x8102d7a8
+3: 0x8102d7f1 -> Thumb target 0x8102d7f0
+Entries 0 and 1 point directly to FUN_8102d78c and FUN_8102d194; located string-raster paths pass DAT_811b98e4 to the same 24px renderer family.
+
+[arithmetically derived bounds]
+lt glyph bytes: 0xE12 * 0x120 = 0xfd440
+lt allocation: 0x1FB * 0x800 = 0xfd800
+lt non-glyph tail: 0x3c0 bytes
+Static conclusion: zero-filling the tail is functionally supported by all located glyph consumers; byte-identical reconstruction still requires preserving it because no producer/checksum routine was found.
+
+[registry: FUN_810224bc @ 0x810224bc]
+Selected routine evidence.
+810224ec: movw       r1, #0xa2e0
+810224f2: movt       r1, #0x8112
+810224fc: movs       r0, #7
+810224fe: str        r0, [r4, #0x14]
+
+[resource_allocations: FUN_8101b504 @ 0x8101b504]
+Selected routine evidence.
+8101b510: movs.w     r0, #0xd800
+8101b514: movt       r0, #0xf
+8101b528: movs.w     r0, #0xf800
+8101b52c: movt       r0, #0x105
+8101b540: movs.w     r0, #0x7c800
+8101b554: movs.w     r0, #0x20000
+8101b568: movs.w     r0, #0x1800000
+
+[entry_reader: FUN_81053b7a @ 0x81053b7a]
+The requested byte count is sector_count << 11 (0x800 bytes per sector).
+81053b8a: adds       r6, r2, #0
+81053b8c: adds       r7, r1, #0
+81053b8e: mov        r8, r0
+81053c7e: lsls       r1, r6, #0xb
+81053c80: adds       r0, r7, #0
+81053c82: blx        r2
+
+[package_loader: FUN_81053694 @ 0x81053694]
+Shared image loader: caller-selected table delta; byte active index; full-u32 count; index*stride destination; optional descriptor/metadata/palette install. The body runs before the comparison, so stored counts 0 and 1 both execute exactly chunk 0.
+8105369c: ldr        r0, [r6, #0x34]
+810536a4: adds       r0, r6, r0
+810536ac: ldrb       r1, [r4, #0x1f]
+810536ae: add.w      sb, r0, r2
+810536b2: ldr.w      sl, [r0, r2]
+810536b6: add.w      r0, sb, r1, lsl #2
+810536ba: ldr.w      fp, [r0, #4]
+810536d0: add.w      r0, sb, r1, lsl #2
+810536d4: ldr        r2, [r0, #8]
+810536da: ldr        r3, [r6, #0x3c]
+810536dc: mla        r1, r1, r3, r7
+810536ea: subs.w     r2, r2, fp
+810536f0: ldrb       r2, [r4, #0x1f]
+810536f2: adds       r2, #1
+810536f4: uxtb       r0, r2
+810536f6: cmp        r0, sl
+81053734: ldr        r0, [r6, #4]
+81053742: strb.w     r4, [r0, #0x2d]
+81053746: ldr        r2, [r6, #0x10]
+81053748: ldr        r1, [r6, #0x14]
+8105374a: adds       r1, r6, r1
+8105374c: bl         #0x810225fa
+81053764: bl         #0x8102fdca
+81053768: ldr        r1, [r6, #0x24]
+8105376e: bl         #0x8102fd82
+
+[gzip_block: FUN_81034e4a @ 0x81034e4a]
+Compressed block starts with output size and three opaque u32 words; RFC1952 stream starts at +0x10.
+81034e5a: adds.w     r2, r0, #0x10
+81034e5e: ldr        r4, [r0]
+81034e66: bl         #0x810e34c4
+
+[metadata_installer: FUN_810225fa @ 0x810225fa]
+Metadata records are 0x20 bytes and the per-bank total must remain strictly below 0x400 records.
+8102260a: adds       r4, r2, #0
+8102260c: adds       r5, r1, #0
+81022654: adds       r1, r3, r4
+81022656: cmp.w      r1, #0x400
+81022672: lsl.w      r2, lr, #0xf
+81022684: lsls       r2, r4, #5
+81022686: adds       r1, r5, #0
+81022688: blx        #0x810e4a88
+
+[bundle_loader: FUN_81053fa6 @ 0x81053fa6]
+Outer package count is one byte and each logical package offset is independently indexed; neighboring offsets are never compared here.
+81053fb0: ldrb       r0, [r6]
+81053fbe: cmp        r7, r0
+81053fc2: lsrs       r0, r3, #2
+81053fc4: cmp        r7, r0
+81053fda: adds       r0, r6, r7
+81053fdc: ldr        r0, [r0, #4]
+81053fde: adds       r0, r6, r0
+81053fe6: bl         #0x81053694
+
+[stream_setup: FUN_8101d4c8 @ 0x8101d4c8]
+Six streaming groups: BK uses archive 4/326 entries/0x220000 output; BSF uses archive 5 split 154 + 140 entries with 0x320000/0x300000 outputs.
+8101d4d4: movs.w     r8, #5
+8101d4fc: str        r2, [r1, #4]
+8101d504: str.w      ip, [r1, #0xc]
+8101d508: str        r2, [r1, #0x10]
+8101d526: str        r2, [r1, #0x2c]
+8101d528: movs.w     r2, #0x220000
+8101d532: strh       r2, [r1, #0x34]
+8101d536: movs.w     r2, #0x320000
+8101d544: strh.w     r8, [r1, #0x40]
+8101d550: str.w      ip, [r1, #0x4c]
+8101d554: str        r2, [r1, #0x50]
+8101d55a: strh.w     r7, [r1, #0x54]
+8101d562: strh.w     r6, [r1, #0x56]
+8101d584: strh.w     r8, [r1]
+8101d592: str        r7, [r1, #4]
+8101d596: str.w      ip, [r1, #0xc]
+8101d5a0: str.w      sb, [r1, #0x10]
+8101d5a8: strh.w     sb, [r1, #0x14]
+
+[bsf_setup: FUN_8101fde8 @ 0x8101fde8]
+BSF copies 0x830 bytes from chunk_base and selects the active table at chunk_base + 0x1400.
+8101fe58: movs.w     r2, #0x830
+8101fe60: ldr.w      r1, [r4, #0x4d0]
+8101fe64: movs.w     r2, #0x830
+8101fe6c: ldr        r3, [r1, #0x34]
+8101fe6e: adds       r1, r1, r3
+8101fe74: blx        #0x810e4a88
+8101fe78: ldr        r0, [r5, #0x14]
+8101fe7a: ldr        r0, [r0, #0x34]
+8101fe84: adds       r0, r0, r2
+8101fe8a: adds.w     r0, r0, #0x1400
+8101fe8e: str.w      r0, [r4, #0x4d0]
+
+[bsf_step: FUN_8101fea6 @ 0x8101fea6]
+BSF truncates the table count to its low byte, writes chunk i to output+i*stride, then copies descriptor-height rows. It also executes chunk 0 before comparing, so low-byte counts 0 and 1 are both one-chunk encodings.
+8101ff08: ldr.w      r0, [r8, #0x4d0]
+8101ff10: ldrb.w     r1, [r8, #0x4d8]
+8101ff18: ldr.w      sb, [fp, #0x10]
+8101ff20: ldr        r3, [r2, #4]
+8101ff22: ldr        r5, [r0]
+8101ff26: ldr.w      r6, [sb, #0x3c]
+8101ff2a: uxtb       r5, r5
+8101ff2c: mla        r1, r1, r6, sl
+8101ff30: ldr        r2, [r2, #8]
+8101ff32: subs       r2, r2, r3
+8101ff36: blx        r4
+8101ff3e: uxtb       r0, r2
+8101ff40: cmp        r0, r5
+8101ff52: ldr.w      r3, [sb, #4]
+8101ff5e: adds       r4, r1, r3
+8101ff68: ldrh       r3, [r4, #0x2a]
+8101ff6e: strd       r0, r3, [sp]
+8101ff78: bl         #0x8102fdca
+8101ff7c: ldr        r0, [r4, #0x14]
+8101ff7e: cmp.w      r0, #0x400
+8101ff9e: bl         #0x8102fd82
+
+[bk_loader: FUN_81053cda @ 0x81053cda]
+BK uses archive 4, table delta 0x1400, NULL descriptor output, and a separately allocated 1024x544 runtime surface.
+81053d30: adds       r1, r5, #0
+81053d34: bl         #0x81021034
+81053d42: lsls       r0, r0, #0xb
+81053da0: adds       r1, r5, #0
+81053da2: bl         #0x81021034
+81053dae: bl         #0x81053b7a
+81053dd2: adds       r0, r6, #0
+81053dd6: movs.w     r2, #0x1400
+81053dda: movs       r3, #0
+81053ddc: bl         #0x81053694
+81053df2: ldr        r1, [r5, #0x18]
+81053df4: adds       r0, r4, #0
+81053dfc: bl         #0x8102fdca
+
+[addpt_loader: FUN_8104d652 @ 0x8104d652]
+ADDPT reads its executable sector record then invokes the outer bundle loader.
+8104d6e0: movw       r0, #0x22dc
+8104d6e6: movt       r0, #0x8111
+8104d6ea: add.w      r0, r0, r1, lsl #2
+8104d6ee: ldrh       r2, [r0, #2]
+8104d6f4: movs       r0, #2
+8104d6f6: bl         #0x81053b7a
+8104d71a: movw       r2, #0xaeb4
+8104d726: movs       r3, #4
+8104d728: bl         #0x81053fa6
+
+[pt_loader: FUN_8105403e @ 0x8105403e]
+PT reads its per-ID executable sector record then invokes the outer bundle loader.
+8105412a: movw       r0, #0x3394
+8105412e: movt       r0, #0x8111
+81054132: add.w      r0, r0, r5, lsl #2
+81054136: ldrh       r2, [r0, #2]
+8105413c: movs       r0, #6
+8105413e: bl         #0x81053b7a
+81054184: mov        r0, r8
+8105418e: bl         #0x81053fa6
+
+[texture_copy: FUN_8102fdca @ 0x8102fdca]
+Zero region arguments select full runtime dimensions; RGBA8 copies width*height*4 bytes.
+8102fe08: ldrh.w     r2, [sb, #0x28]
+8102fe0c: cmp        r5, #0
+8102fe18: cmp        r7, #0
+8102fe1c: cmp.w      r8, #0
+8102fe24: ldrh.w     r6, [sb, #0x26]
+8102fe28: ldrh.w     r8, [sb, #0x2a]
+8102fe2c: mul        ip, r6, r2
+8102fe52: lsl.w      r6, lr, #2
+8102fe56: lsl.w      r7, ip, #2
+8102fe8a: adds       r0, r0, r4
+8102fe8e: adds       r2, r5, #0
+8102fe90: blx        #0x810e4a88
+
+[palette_copy: FUN_8102fd82 @ 0x8102fd82]
+Palette copy is performed only for runtime palette sizes 0x40 or 0x400.
+8102fdac: ldr        r2, [r5, #0x14]
+8102fdae: cbz        r2, #0x8102fdc8
+8102fdb2: cmp        r2, #0x40
+8102fdb6: cmp.w      r2, #0x400
+8102fdbc: blx        #0x810e40b8
+8102fdc4: blx        #0x810e4a88
+
+[pr_lookup: FUN_81053670 @ 0x81053670]
+Selected routine evidence.
+81053670: uxtb       r0, r0
+81053672: cmp        r0, #0x23
+8105367a: movw       r1, #0x3308
+81053682: ldr.w      r0, [r1, r0, lsl #2]
+81053686: movw       r1, #0x98e8
+8105368e: ldr        r1, [r1]
+81053690: adds       r0, r1, r0
+
+[pr_direct_texture: FUN_8100ae84 @ 0x8100ae84]
+Selected routine evidence.
+8100aeaa: movs       r0, #0xb
+8100aeac: bl         #0x81053670
+8100aeb4: adds.w     r1, r0, #0x40
+8100aebe: bl         #0x8102fdca
+8100aec4: movs       r0, #0xb
+8100aec6: bl         #0x81053670
+8100aece: bl         #0x8102fd82
+
+[pr_compressed_atlas: FUN_8103ef36 @ 0x8103ef36]
+Selected routine evidence.
+8103ef70: movs       r0, #0x20
+8103ef72: bl         #0x81053670
+8103ef82: ldr.w      r1, [r1, r6, lsl #3]
+8103ef94: movs       r0, #0x21
+8103ef96: bl         #0x81053670
+8103efa6: ldr.w      r1, [r1, r6, lsl #3]
+8103efb8: movs       r0, #0x22
+8103efba: bl         #0x81053670
+8103efca: ldr.w      r1, [r1, r6, lsl #3]
+8103efd4: adds       r0, r0, r1
+8103efd6: adds       r0, #0x10
+8103efdc: blx        r6
+8103efde: movs       r6, #0x32
+8103efe0: movs.w     r2, #0x160
+8103efee: add.w      r4, r4, #0x160
+8103eff2: add.w      r5, r5, #0x200
+
+[lt_renderer: FUN_8102d194 @ 0x8102d194]
+24px glyph path bounds IDs to <0xE12 and addresses glyph_id*0x120, 12 packed bytes for each of 24 rows.
+8102d37c: movw       r1, #0xe12
+8102d380: cmp        r4, r1
+8102d5e8: add.w      r8, r4, r4, lsl #3
+8102d5fa: add.w      r5, r5, r8, lsl #5
+8102d600: movs       r1, #0xc
+8102d606: ldrb       r3, [r5]
+8102d614: ldrb       r3, [r5], #1
+8102d61a: ror.w      r3, r3, #4
+8102d62e: add.w      lr, lr, #1
+8102d632: add.w      r5, ip, #0xc
+8102d636: adds       r6, #0x18
+8102d638: cmp.w      lr, #0x18
+
+[script_load: FUN_81053cb6 @ 0x81053cb6]
+SC entry IDs below 0x59 are read from archive index 1 through FUN_81053B7A using the executable sector table at 0x8111344C. This proves that compiled script payloads are external in sc.cpk, not embedded wholesale in the ELF.
+81053cb8: uxth       r3, r1
+81053cbc: cmp        r3, #0x59
+81053cc4: movw       r0, #0x344c
+81053ccc: add.w      r0, r0, r3, lsl #2
+81053cd0: ldrh       r2, [r0, #2]
+81053cd2: movs       r0, #1
+81053cd4: bl         #0x81053b7a
+
+[script_reload: FUN_81019b6c @ 0x81019b6c]
+Scene changes load the selected SC entry into DAT_811B98F0 and then reinitialize the script VM.
+81019b8a: movw       r0, #0x98f0
+81019b96: ldr        r0, [r0]
+81019b9c: ldrh       r4, [r1]
+81019ba0: bl         #0x81053cb6
+81019ba4: cmp        r0, #0
+
+[script_layout: FUN_8101a6ea @ 0x8101a6ea]
+The loaded SC entry is split into voice header at +0x00, generated runtime tables at +0x80, and stream table/compiled payload at +0x2000.
+8101a788: ldr.w      r3, [lr]
+8101a790: str        r3, [r6]
+8101a79a: adds.w     r4, r3, #0x80
+8101a79e: str        r4, [r6, #4]
+8101a7a8: adds.w     r3, r3, #0x2000
+8101a7ac: str        r3, [r6, #8]
+
+[script_voice_init: FUN_8101666c @ 0x8101666c]
+The first 16 bytes are compared with voice_not_exist; otherwise the first u16 is installed as the local voice base.
+810166a2: ldr        r1, [r6]
+810166a4: blx        #0x810e4aa8
+810166b4: bne        #0x810166be
+810166b6: movw       r1, #0xffff
+810166be: movw       r1, #0x86cc
+810166c6: ldr        r1, [r1]
+810166c8: ldrh       r1, [r1]
+
+[script_global_flag: FUN_8101c516 @ 0x8101c516]
+The first base/count pair in each 0x0C-byte record at 0x810F9B1C maps a local index into a global runtime bitset.
+8101c528: mov        ip, r0
+8101c52a: movw       r0, #0x9b1c
+8101c538: adds       r3, r2, r0
+8101c53a: ldrh       r3, [r3, #2]
+8101c53c: cmp        ip, r3
+8101c540: ldrh       r2, [r2, r0]
+8101c542: adds       r2, r2, r1
+
+[script_global_secondary: FUN_8101c6c4 @ 0x8101c6c4]
+The third base/count pair at record +0x08/+0x0A maps the local secondary domain into a separate global bitset. The ELF table is metadata, not script payload.
+8101c6da: movw       r4, #0x9b1c
+8101c6e8: add.w      r2, r4, r3, lsl #2
+8101c6ec: ldrh       r3, [r2, #0xa]
+8101c6ee: cmp        ip, r3
+8101c6f2: ldrh       r2, [r2, #8]
+8101c6f4: adds       r0, r2, r0
+
+[script_init: FUN_81000512 @ 0x81000512]
+Initialization installs the two tables at entry+0x80 and sets script_base to entry+0x2000. The first u32 at script_base is both stream-0 offset and the dense offset-table byte extent.
+8100052e: ldr.w      r1, [sl]
+81000532: movw       r0, #0x9ac
+81000536: ldr        r2, [r1]
+81000550: adds       r1, r1, r2
+81000552: str        r1, [r0]
+
+[script_lookup: FUN_810003b2 @ 0x810003b2]
+Compiled-script stream lookup is script_base + offsets[u16 id], with no monotonicity check.
+810003b4: uxth       r4, r0
+810003c6: ldr.w      r1, [r0, #0x9ac]
+810003ca: ldr        r0, [r0]
+810003cc: ldr.w      r1, [r1, r4, lsl #2]
+810003d0: adds       r0, r0, r1
+
+[script_interpreter: FUN_8100132c @ 0x8100132c]
+When executed as bytecode, words below 0xE12 are glyph IDs and selected 0xFFxx values are controls. The FFF0 case passes the current marker to FUN_81006A86 and advances by the parser's returned u16 count plus the marker/index words.
+8100140e: movw       r0, #0xe12
+81001412: cmp        lr, r0
+8100141a: movw       r0, #0xff0d
+8100141e: cmp        lr, r0
+81001422: movw       r0, #0xff0c
+81001426: cmp        lr, r0
+8100142a: movw       r0, #0xff0b
+8100142e: cmp        lr, r0
+810021b8: ldrh.w     r0, [ip, #2]
+810021be: strh.w     r0, [r6, #0xe8]
+810021e2: bl         #0x81006a86
+810021e8: lsls       r0, r0, #1
+810021ee: adds       r0, #4
+810021f0: add        r0, sb
+810021f2: str        r0, [r8, #-0x52]
+
+[script_text_entry: FUN_81006a86 @ 0x81006a86]
+Selects one 0x1C-byte text-render state and delegates to FUN_8104E0A6.
+81006a88: movw       r3, #0x81fc
+81006a8c: uxtb       r2, r2
+81006a90: rsb        r2, r2, r2, lsl #3
+81006a94: movt       r4, #0x8114
+81006a9a: add.w      r2, r4, r2, lsl #2
+81006a9e: bl         #0x8104e0a6
+81006aaa: strb       r2, [r4, r1]
+
+[script_text_parser: FUN_8104df94 @ 0x8104df94]
+Consumes the marker/index prefix, scans speaker glyphs until 0xFFFF, returns the number of consumed u16 words, and hands the terminated speaker string to the renderer.
+8104dfb6: ldrh       r0, [r6]
+8104dfbc: ldrh       r0, [r6, #2]
+8104dfc4: cmp        r0, r1
+8104dfc6: bne        #0x8104dfde
+8104dfe8: ldrh       r0, [r6, #4]
+8104dfea: cmp        r0, r1
+8104dfec: bne        #0x8104e004
+8104e048: ldrh       r0, [r6, #2]!
+8104e052: cmp        r0, r2
+8104e054: bne        #0x8104e02e
+8104e084: add.w      r0, sb, #1
+8104e088: uxth       r0, r0
+
+[script_text_wrapper: FUN_8104e0a6 @ 0x8104e0a6]
+Clears the render buffer and invokes the speaker parser; paired with the FFFE interpreter case and corpus validation this establishes the exported speaker/dialogue grammar.
+8104e0aa: ldr        r2, [r4, #0x10]
+8104e0ae: ldr        r0, [r4, #0x14]
+8104e0b4: blx        #0x810e4a78
+8104e0be: bl         #0x8104df94
+
+[script_layer_image: FUN_81008300 @ 0x81008300]
+Opcode 0xFF33 passes a layer byte and image ID into FUN_81008300, which reaches the BK/BSF streaming dispatcher FUN_81020316.
+81008306: uxtb.w     r8, r0
+8100830e: uxth.w     fp, r1
+81008312: strh.w     fp, [sp, #2]
+810084b4: bl         #0x81020316
+
+[script_bk_request: FUN_81017744 @ 0x81017744]
+Opcode 0xFF49 validates a BK ID below 0x146 and requests archive class 1 through FUN_81053E80; SC stores the reference, not the texture bytes.
+81017786: ldrh       r0, [r1, #2]
+8101778c: cmp.w      r0, #0x146
+81017790: ldrh.w     ip, [r1, #4]
+81017794: strb.w     ip, [r2, #0x35c]
+81017798: ldrh       r2, [r1, #6]
+810177b0: bgt        #0x810177e0
+810177be: movs       r1, #1
+810177c0: bl         #0x81053e80
+
+[script_bk_commit: FUN_8101781e @ 0x8101781e]
+Opcode 0xFF48 advances the BK loader FUN_81053CDA, which decodes from bk.cpk into the runtime texture.
+81017830: cbnz       r0, #0x81017848
+8101783a: ldr        r0, [r0, #0x48]
+81017840: bl         #0x81053cda
+
+[itoc_search: FUN_81066e32 @ 0x81066e32]
+Binary search returns either a row index or a negative insertion-position encoding.
+81066e3e: cmp        r2, #0
+81066e5a: bl         #0x810da2ba
+81066e62: adds       r0, r6, #0
+81066eca: adds       r0, r6, #1
+81066ecc: rsbs       r0, r0, #0
+
+[itoc_prefix_sum: FUN_81066ed2 @ 0x81066ed2]
+The offset routine independently sums aligned prefixes from both DataL and DataH; this is the physical merge-by-ID proof.
+81067016: ldr.w      r0, [fp]
+8106701e: bl         #0x810da2ba
+81067022: adds.w     r0, r0, r8
+81067026: ands.w     r0, r0, sb
+8106702e: adds       r6, r6, r0
+81067040: ldr.w      r0, [fp, #4]
+81067048: bl         #0x810da362
+8106704c: adds.w     r0, r0, r8
+81067050: ands.w     r0, r0, sb
+81067058: adds       r6, r6, r0
+
+[itoc_lookup: FUN_8106706c @ 0x8106706c]
+The lookup searches both tables, converts the missing table result to an insertion index, and passes both prefix counts into FUN_81066ED2.
+81067072: ldr        r0, [r6]
+81067076: ldr        r2, [r6, #8]
+8106707c: bl         #0x81066e32
+81067082: ldr        r0, [r6, #4]
+81067086: ldr        r2, [r6, #0xc]
+81067088: bl         #0x81066e32
+81067094: ldrh       r3, [r6, #0x10]
+81067096: cmp.w      r5, #-0x80000000
+8106709c: adds       r0, r5, #1
+810670a0: adds       r5, #1
+810670a8: bl         #0x81066ed2
+810670f8: ldrh       r3, [r6, #0x10]
+810670fa: cmp.w      r4, #-0x80000000
+81067100: adds       r0, r4, #1
+81067104: adds       r4, #1
+8106710c: bl         #0x81066ed2
+

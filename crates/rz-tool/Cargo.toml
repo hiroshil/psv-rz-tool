@@ -1,0 +1,13 @@
+[package]
+name = "rz-tool"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rz-tool"
+path = "src/main.rs"
+
+[dependencies]
+rz-assets = { path = "../rz-assets" }

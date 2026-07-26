@@ -1,0 +1,796 @@
+# PCSG00933 engine analysis for rz-tool 1.0.0
+
+## 1. Purpose and claim boundary
+
+This report is the single authoritative analysis document for `rz-tool 1.0.0`.
+It consolidates the resource-registry, CPK/ITOC, image-package, texture, script,
+font and executable-patch findings used by the implementation.
+
+The report distinguishes four evidence classes:
+
+- **Direct instruction evidence:** a mapped routine reads, writes, compares or
+  passes the stated value.
+- **Call-chain evidence:** ownership or sequencing follows from identified
+  callers and callees.
+- **Corpus-confirmed grammar:** a proposed structure matches every supplied
+  entry and independent executable counts.
+- **Preservation boundary:** the engine consumes bytes whose producer semantics
+  are not sufficiently proven; those bytes are retained explicitly rather than
+  regenerated from a guess.
+
+The analysis does not claim recovery of original source-language syntax,
+comments, macro names, local identifiers, all script opcode semantics, or all
+`pr.bin` slot formats. Where those facts are absent from the executable and
+corpus, the implementation remains structural and lossless rather than
+inventing semantics.
+
+## 2. Inputs and reproducibility
+
+The stable analysis was based on the supplied files:
+
+| Input | SHA-256 |
+|---|---|
+| `eboot.bin.elf` | `f5233a9ed15bedab8893800701a176da07986952fb0fb9ce92b33519327e1825` |
+| Capstone 5.0.9 wheel | `273fd8d747d2e35c88f91450be51a603ecfaafb00d96d9f315dcb8689c86193e` |
+| `mapper.json` | `1d31d79ad9dc9ff8e64e57f5fa395317106d5d42adab7ae69821ffea45ad503e` |
+| `output.c` | `5c2d5f02636b2df020eb9e48798e56fdf8b950cd266ed3d0f6513cdba89fd3f4` |
+| `output.asm` | `aac4aa99aa1a4ed7d3918884c5795ace9c779a43717797258001732b23bec61d` |
+| generated `CAPSTONE_EVIDENCE.txt` | `1b0fa147b016ecfa1f8d302e3cb33685343883b0a4147cef7a2aa6046c29a609` |
+
+Capstone is imported by extracting the wheel; installing it into the Python
+environment is not required:
+
+```bash
+mkdir capstone-wheel
+unzip capstone-5.0.9-*.whl -d capstone-wheel
+PYTHONPATH=capstone-wheel \
+python tools/research/analyze_engine_assets.py \
+  eboot.bin.elf mapper.json > CAPSTONE_EVIDENCE.txt
+```
+
+`tools/validate_engine_assets.py` can regenerate the report and require
+byte-for-byte equality with the checked-in evidence.
+
+## 3. Architecture and ownership
+
+`rz-tool` uses a strict layering boundary:
+
+```text
+cri-archive-lib
+  generic CPK/UTF/ITOC mechanics and archive writing
+
+rz-assets
+  PCSG00933 allocations, package grammars, textures, script VM IR,
+  font bank, validation and ELF patching
+
+rz-tool
+  CLI and transaction orchestration
+```
+
+Engine codecs are not merged into `cri-archive-lib`. This prevents generic CPK
+code from silently acquiring title-specific assumptions.
+
+The static resource registry begins at `0x8112a2e0`:
+
+| Index | Resource | Declared count | Stable policy |
+|---:|---|---:|---|
+| 0 | `vo.awb` | `0x4bd0` | audio, excluded |
+| 1 | `sc.cpk` | `0x59` | editable compiled scripts |
+| 2 | `addpt.cpk` | `1` | editable image package/bundle |
+| 3 | `snd.cpk` | `0x1b0` | audio, excluded |
+| 4 | `bk.cpk` | `0x146` | editable image packages |
+| 5 | `bsf.cpk` | `0x126` | editable streaming image packages |
+| 6 | `pt.cpk` | `0x17` | mixed image packages; unproved entries become opaque |
+| 7 | `lt.bin` | `1` | editable glyph bank |
+| 8 | `pr.bin` | `1` | raw-only; mixed grammars |
+| 9 | `se.awb` | `1` | audio, excluded |
+
+`FUN_810224bc` installs only the first seven records into the CRI binder:
+
+```text
+810224ec  movw r1, #0xa2e0
+810224f2  movt r1, #0x8112
+810224fc  movs r0, #7
+810224fe  str  r0, [r4, #0x14]
+```
+
+The adjacent standalone table at `0x81129e58` describes:
+
+| ID | File | Size | Sectors |
+|---:|---|---:|---:|
+| 7 | `lt.bin` | `0x0fd800` | `0x01fb` |
+| 8 | `pr.bin` | `0x105f800` | `0x20bf` |
+| 9 | `se.awb` | `0x07c800` | `0x00f9` |
+
+`lt.bin` and `pr.bin` are therefore not CPK entries accidentally missed by the
+tool; they are independently allocated and loaded resources.
+
+## 4. CPK and ITOC behavior
+
+### 4.1 `FUN_81066e32`: ITOC subtable search
+
+The routine binary-searches one ITOC width-class table and returns the matching
+row or insertion position.
+
+### 4.2 `FUN_8106706c`: combined DataL/DataH lookup
+
+The routine searches both ITOC width classes by file ID. `DataL` and `DataH` are
+index encodings for different field widths, not separate physical payload
+areas.
+
+### 4.3 `FUN_81066ed2`: physical prefix calculation
+
+The routine sums aligned sizes for rows with IDs preceding the requested ID
+across both subtables. The physical payload order is therefore the merged order
+by file ID. The patched `cri-archive-lib` reader/writer must preserve that
+merged order; concatenating all `DataL` rows followed by all `DataH` rows is
+incorrect.
+
+### 4.4 Fixed executable allocation tables
+
+The executable contains sector-count tables independent of CPK metadata:
+
+| Archive | Address | Records | Record stride | Sector field |
+|---|---:|---:|---:|---:|
+| `addpt.cpk` | `0x811122dc` | 1 | 4 | `+2`, `u16` |
+| `pt.cpk` | `0x81113394` | 23 | 4 | `+2`, `u16` |
+| `sc.cpk` | `0x8111344c` | 89 | 4 | `+2`, `u16` |
+| `bk.cpk` | `0x810fa500` | 326 | 8 | `+4`, `u16` |
+| `bsf.cpk` | `0x810faf30` | 294 | 8 | `+4`, `u16` |
+
+Rebuilt logical data must fit the corresponding fixed allocation unless the
+specific engine table is patched. Stable 1.0 patches only the analyzed SC
+allocation path. ADDPT/PT/BK/BSF output exceeding stock allocation is rejected.
+
+## 5. Common entry reader and allocation model
+
+`FUN_81053b7a` converts a sector count into bytes by shifting left 11 bits,
+therefore multiplying by `0x800`. Callers supply archive identity, entry ID,
+destination and the executable-resident sector count.
+
+This establishes two independent constraints:
+
+1. CPK metadata must describe the rebuilt file correctly.
+2. The executable allocation table must permit the same number of sectors.
+
+A generic CPK writer cannot solve an engine allocation overflow by itself.
+
+`FUN_8101b504` allocates the major standalone/runtime buffers, including:
+
+- `0x0fd800` for `lt.bin`;
+- `0x105f800` for `pr.bin`;
+- `0x07c800` for `se.awb`;
+- stock `0x00020000` for the active SC entry;
+- `0x01800000` scratch capacity used by package loading paths.
+
+## 6. Image-package grammar
+
+### 6.1 Shared loader: `FUN_81053694`
+
+The shared loader processes one compressed destination block per invocation:
+
+1. read `u32(package + 0x34)` to locate the compressed region;
+2. add a caller-selected table delta (`0` or `0x1400` in analyzed profiles);
+3. read the table count word at relative `+0`;
+4. read block start/end offsets from the `u32` array beginning at `+4`;
+5. compute destination as `output_base + active_index * u32(package + 0x3c)`;
+6. invoke the GZIP block wrapper;
+7. after the final block, install supplemental metadata, texture bytes and
+   palette bytes.
+
+Selected instructions:
+
+```text
+8105369c  ldr    r0, [r6, #0x34]
+810536a4  adds   r0, r6, r0
+810536ae  add.w  sb, r0, r2
+810536b2  ldr.w  sl, [r0, r2]
+810536ba  ldr.w  fp, [r0, #4]
+810536d4  ldr    r2, [r0, #8]
+810536da  ldr    r3, [r6, #0x3c]
+810536dc  mla    r1, r1, r3, r7
+8105374c  bl     0x810225fa
+81053764  bl     0x8102fdca
+8105376e  bl     0x8102fd82
+```
+
+The loop behaves as a do-while: stored counts zero and one both cause block zero
+to execute once. The active block index is byte-sized, so the editable model
+rejects plans above 255 blocks. BSF uses only the low byte of its count word;
+the upper 24 bits remain opaque and are preserved.
+
+### 6.2 Package header fields
+
+Directly consumed fields include:
+
+| Package offset | Meaning proven by consumer |
+|---:|---|
+| `+0x04` | offset to direct `0x30`-byte texture descriptor |
+| `+0x10` | supplemental record count |
+| `+0x14` | supplemental record table offset |
+| `+0x24` | palette/auxiliary offset |
+| `+0x34` | compressed region offset |
+| `+0x3c` | destination stride per block |
+
+Bytes with incomplete producer semantics remain visible in package JSON through
+preserved layout fields. Stable 1.0 does not hide them in a skeleton file.
+
+### 6.3 GZIP block wrapper: `FUN_81034e4a`
+
+```text
+81034e5a  adds.w r2, r0, #0x10
+81034e5e  ldr    r4, [r0]
+81034e66  bl     0x810e34c4
+```
+
+The block layout is:
+
+```text
++0x00  u32 decompressed_size
++0x04  u32 opaque/reserved_0
++0x08  u32 opaque/reserved_1
++0x0c  u32 opaque/reserved_2
++0x10  RFC 1952 GZIP stream
+```
+
+The three intermediate words are engine-observed metadata without a proven
+producer grammar. They are retained for unchanged blocks. For changed blocks,
+the size and GZIP stream are rebuilt while the reserved words remain unchanged.
+
+### 6.4 Bundle loader: `FUN_81053fa6`
+
+ADDPT/PT bundle records use:
+
+```text
++0x00  u8 package_count
++0x04  u32 package_relative_offset[package_count]
+```
+
+The loader adds each offset to the bundle base and dispatches the resulting
+subpackage to `FUN_81053694`.
+
+### 6.5 Supplemental records: `FUN_810225fa`
+
+The routine copies `count × 0x20` bytes into runtime state and enforces a fixed
+pool limit. Record extent and count are direct evidence. Individual semantic
+field names are not fully recovered, so the exact records remain authoritative.
+
+## 7. Texture descriptor and GPU storage
+
+### 7.1 Direct descriptor
+
+The analyzed path uses a `0x30`-byte descriptor. Fields consumed by the stable
+codec include:
+
+| Descriptor offset | Field |
+|---:|---|
+| `+0x04` | texture data size |
+| `+0x10` | runtime GXT pointer; persisted direct form is zero |
+| `+0x14` | palette byte size (`0x40` P4, `0x400` P8) |
+| `+0x18` | allocation/address flags |
+| `+0x1c` | texture type |
+| `+0x20` | texture format |
+| `+0x28` | width (`u16`) |
+| `+0x2a` | height (`u16`) |
+| `+0x2d` | memory-bank selector written during loading |
+
+Unclassified bits remain preserved. PNG cannot reconstruct them.
+
+### 7.2 Texture copy: `FUN_8102fdca`
+
+The routine derives byte width from the descriptor and copies the post-GZIP
+source buffer directly into mapped GPU memory. It does not decode an image or
+canonicalize storage. Observed paths include P4, P8, selected three-byte formats
+and four-byte RGBA storage, plus BC formats handled as physical GPU blocks.
+
+### 7.3 Palette copy: `FUN_8102fd82`
+
+The routine accepts palette sizes `0x40` and `0x400` and copies palette bytes in
+order. Duplicate colors at different indices remain observable; palette order
+is not a disposable set.
+
+### 7.4 Runtime RGBA surfaces
+
+Executable descriptors prove profile-specific runtime surfaces:
+
+| Descriptor | Size | Format | Geometry |
+|---|---:|---:|---:|
+| BK stream/loader | `0x220000` | `0x0c001000` | 1024×544 RGBA8 |
+| BSF group 0 | `0x320000` | `0x0c001000` | 1024×800 RGBA8 |
+| BSF groups 1–3 | `0x300000` | `0x0c001000` | 1024×768 RGBA8 |
+
+These dimensions are caller/profile invariants, not values inferred from PNG.
+
+## 8. Safe editable texture re-encoding
+
+### 8.1 Corruption mechanism corrected by 1.0
+
+The unsafe sequence is:
+
+```text
+source GZIP → source GPU bytes → PNG → generic encoder → new GPU bytes → GZIP
+```
+
+Even when the PNG is visually unchanged, this can modify engine data:
+
+- BC1/BC2/BC3 encoding is lossy and not a byte inverse of decoding;
+- indexed nearest-color selection may choose different P4/P8 indices;
+- duplicate palette colors may move to different indices;
+- visually identical pixels do not imply identical GPU bytes;
+- rebuilding every compressed block discards original GZIP streams, reserved
+  words and alignment without an engine requirement.
+
+The defect is in the title-specific serializer before CPK packing, not primarily
+in the generic CPK writer.
+
+### 8.2 Extraction contract
+
+Every editable subpackage stores:
+
+- editable PNG;
+- exact aggregate post-GZIP destination bytes;
+- exact source chunk-table region including block headers, streams and padding;
+- FNV-1a fingerprints for both machine-managed artifacts;
+- explicit package/descriptor/profile metadata.
+
+The source buffer is physical-layout context and the authoritative no-edit
+baseline. It is not used to suppress valid edits.
+
+### 8.3 Build algorithm
+
+Stable 1.0 performs:
+
+1. require schema/document version 1;
+2. validate archive profile, allocation, header, descriptor, geometry, format,
+   stride and chunk-count limits;
+3. fingerprint-check both source artifacts;
+4. reparse the source chunk table and require JSON metadata, table bytes and
+   inflated aggregate buffer to agree;
+5. decode source GPU bytes to establish the baseline image;
+6. compare the editable PNG with that baseline;
+7. encode changed pixels into the original physical layout;
+8. rebuild palette/index data when required;
+9. recompress only destination chunks whose bytes changed;
+10. rebuild or relocate the chunk table when necessary;
+11. parse the complete generated subpackage again;
+12. inflate all generated blocks and require byte-exact aggregate equality with
+    the intended encoded GPU buffer;
+13. decode the generated texture and verify format-specific visual invariants;
+14. only then pass the payload to the CPK writer.
+
+### 8.4 RGBA and reversible layouts
+
+For reversible layouts, the decoded rebuilt texture must equal the edited PNG
+exactly. Physical order, visible dimensions, allocation dimensions and padding
+are independently validated.
+
+### 8.5 BC1/BC2/BC3
+
+BC formats remain editable. The safety strategy is block-local, not copy-only:
+
+- unchanged 4×4 storage blocks remain byte-identical;
+- changed blocks use source endpoints as optimization seeds;
+- candidate endpoints include source values and color extrema;
+- local refinement selects a better representable block;
+- edge texels outside the visible image preserve source values;
+- block bytes are written to the original linear or proven Vita-swizzled
+  physical position;
+- the new block is immediately decoded and its visual error measured;
+- an edit is rejected only when it collapses to no representable change, not
+  because BC is inherently lossy.
+
+No arbitrary source-relative quality threshold converts the editor into a
+copy-only tool.
+
+### 8.6 P4/P8
+
+Paletted editing rebuilds both indices and palette:
+
+- exact source colors retain their original indices where possible;
+- duplicate palette entries remain distinguishable through source index
+  history;
+- new colors consume available entries deterministically;
+- images above 16 or 256 colors use deterministic median-cut quantization;
+- P4 writes low nibble before high nibble;
+- the unused nibble for an odd visible pixel count retains the source value;
+- palette sizes remain exactly `0x40` or `0x400` bytes.
+
+### 8.7 Incremental compressed-table rebuild
+
+Each destination block is compared against the source aggregate buffer:
+
+- unchanged destination bytes reuse the original complete compressed block;
+- changed destination bytes produce a new GZIP stream;
+- reserved words are retained;
+- unchanged table prefix and profile-specific opaque count bits are retained;
+- table offsets are regenerated;
+- the table remains in place if it fits the original span;
+- otherwise the compressed region is relocated with alignment and package
+  offsets are updated.
+
+### 8.8 Fail-closed boundaries
+
+Build aborts transactionally on:
+
+- unsupported texture format or unproved layout;
+- mip/tile/swizzle combination without a serializer;
+- missing or mismatched source artifact fingerprints;
+- source table/JSON/decompressed-buffer disagreement;
+- overlapping writes or incomplete visible-surface coverage;
+- invalid palette size or descriptor mismatch;
+- chunk count above 255;
+- decompression or reparse mismatch;
+- fixed allocation overflow;
+- edited lossy block/surface producing no representable visual change.
+
+## 9. Archive-specific image paths
+
+### 9.1 ADDPT
+
+`FUN_8104d652` loads the single ADDPT entry and dispatches its bundle through
+`FUN_81053fa6`. The profile uses table delta zero and package-created texture
+descriptors.
+
+### 9.2 PT
+
+`FUN_8105403e` and `FUN_81054260` establish PT bundle/package use. PT contains 23
+fixed executable allocations. Entries that fail the proven grammar are retained
+as explicit opaque payloads instead of being guessed or causing the complete
+archive extraction to fail.
+
+### 9.3 BK
+
+`FUN_81053cda` uses table delta `0x1400` and copies the final decompressed data
+into an executable-created 1024×544 RGBA8 surface. The editable codec validates
+that runtime profile rather than treating each CPK `.bin` entry as a GXT file.
+
+### 9.4 BSF
+
+`FUN_8101d4c8`, `FUN_8101fde8` and `FUN_8101fea6` form the streaming subsystem.
+The observed groups use 1024-wide RGBA8 surfaces with heights 800 or 768. BSF
+consumes the low byte of the table count word and preserves the remaining bits.
+
+## 10. `sc.cpk`: compiled scene scripts
+
+### 10.1 Ownership and loading
+
+`FUN_81053cb6`:
+
+- accepts IDs below `0x59`;
+- selects archive index 1 (`sc.cpk`);
+- reads the entry sector count from `0x8111344c`;
+- calls the fixed-sector reader.
+
+`FUN_81019b6c` loads the selected entry into the active script buffer and invokes
+VM initialization. The ELF contains the VM and metadata tables, not a duplicate
+of all script payloads.
+
+### 10.2 Entry layout
+
+All supplied entries conform to:
+
+```text
+0x0000..0x007f  voice block
+0x0080..0x008f  runtime header
+0x0090..         primary u32 offsets
+                  align to 0x10
+                  secondary records, 7 × u32 each
+                  zero padding through 0x1fff
+0x2000..end      stream-offset table + compiled payload/data
+```
+
+At `entry + 0x80`:
+
+| Relative offset | Type | Meaning |
+|---:|---|---|
+| `+0x00` | `u32` | primary table offset, canonically `0x10` |
+| `+0x04` | `u32` | primary marker count |
+| `+0x08` | `u32` | secondary table offset |
+| `+0x0c` | `u32` | secondary record count |
+
+The canonical secondary offset is
+`align_up(0x10 + primary_count × 4, 0x10)`.
+
+### 10.3 Voice block: `FUN_8101666c`
+
+Entries normally contain a little-endian `u16` voice base followed by zeroes.
+The non-voice form begins with `voice_not_exist\0`. The complete `0x80` bytes
+are regenerated from this explicit representation.
+
+### 10.4 Stream resolver: `FUN_810003b2`
+
+The routine returns:
+
+```text
+script_base + stream_offsets[u16_stream_id]
+```
+
+Located direct, conditional, table-select and resume paths pass stream IDs to
+this resolver. Offsets may alias and need not be monotonic.
+
+### 10.5 Main interpreter: `FUN_8100132c`
+
+The dispatcher contains 171 explicit control cases in the `0xfefe..0xffff`
+range. Directly observed behavior includes:
+
+- words below `0x0e12` on glyph paths;
+- `0xfff0` primary dialogue marker;
+- `0xfffe` line completion;
+- `0xffff` path/script termination;
+- `0xff33`, `0xff48`, `0xff49` external image/resource routing.
+
+Unclassified commands and embedded tables remain exact raw `u16` nodes. Stable
+1.0 does not assign names or operand widths without evidence.
+
+### 10.6 Text grammar
+
+The call chain
+`FUN_8100132c → FUN_81006a86 → FUN_8104e0a6 → FUN_8104df94` proves:
+
+```text
+fff0 marker_index speaker_glyph* ffff dialogue_glyph* fffe
+```
+
+Corpus validation found 20,686 primary markers with this exact grammar and no
+embedded control words inside the speaker/body glyph spans.
+
+### 10.7 Primary marker table
+
+The runtime table contains byte offsets of the ordered marker chain:
+
+```text
+fff0 0000
+fff0 0001
+fff0 0002
+...
+```
+
+The assembler derives the table after emitting the new payload. It does not copy
+stale offsets from extraction.
+
+### 10.8 Secondary records
+
+The corpus contains 47 records of seven `u32` words, 329 fields total:
+
+- 119 fields are even in-payload addresses targeting valid boundaries/content;
+- 210 fields are zero or small immediate values;
+- no located address splits a recognized dialogue span.
+
+Address fields become symbolic labels in machine-managed metadata and are
+resolved after editable nodes are emitted. Higher-level field names remain
+unknown.
+
+### 10.9 Relocatable source-equivalent IR
+
+The original compiler input is not recoverable: comments, macros, identifier
+names and source syntax are absent. Stable 1.0 emits the strongest lossless
+substitute:
+
+- stream labels;
+- typed Unicode dialogue nodes;
+- exact raw `u16` nodes;
+- symbolic labels for all engine-consumed payload addresses;
+- machine-managed secondary relocation records.
+
+A dialogue node assembles as:
+
+```text
+fff0 marker_index
+speaker glyphs
+ffff
+text glyphs
+fffe
+```
+
+Variable-length edits are supported because stream, primary and classified
+secondary addresses are regenerated rather than patched at old offsets.
+
+### 10.10 Allocation tail
+
+The supplied entries follow:
+
+```text
+logical payload ending in ffff
+zero-filled free capacity
+16-byte opaque footer at allocation end
+```
+
+The free space is capacity, not source IR. Build emits the logical payload,
+zero-fills remaining capacity, then restores the explicit footer at the last 16
+bytes. No located VM consumer reads the footer, but its producer/checksum
+semantics are unproved, so it is preserved.
+
+## 11. SC global metadata and ELF patching
+
+### 11.1 Global table at `0x810f9b1c`
+
+Each of the 89 records is:
+
+```text
+u16 stream_global_base
+u16 stream_count
+u16 primary_global_base
+u16 primary_count
+u16 secondary_global_base
+u16 secondary_count
+```
+
+`FUN_8101c516`, `FUN_8101c58e`, `FUN_8101c604`, `FUN_8101c6c4` and
+`FUN_8101c720` use these bases/counts for global runtime state. Primary base
+advances by `ceil(primary_count / 8)`, consistent with bitset storage.
+
+### 11.2 Patch site `0x8111344c`
+
+The SC sector table consists of 89 `(u16 start_sector, u16 sector_count)`
+records. Stable 1.0 validates the cumulative stock layout and recomputes both
+fields from rebuilt entry allocations.
+
+### 11.3 Patch site `0x810f9b1c`
+
+Structural edits may change local stream, primary or secondary counts. Stable
+1.0 recomputes every global base/count record from the rebuilt project.
+
+### 11.4 Patch site `0x8101b554`
+
+The stock four bytes encode `movs.w r0, #0x20000`. The patcher accepts only a
+fixed documented set of power-of-two encodings through `0x08000000`. It maps
+virtual addresses through ELF32 `PT_LOAD` program headers and refuses unknown
+signatures, encrypted/non-ELF inputs, or unsupported immediates.
+
+### 11.5 Transaction model
+
+CPK and ELF are written to staging paths. Both are renamed into place only after
+all builds, table calculations, signature checks and writes succeed. An error
+removes staged outputs rather than leaving a partially updated pair.
+
+### 11.6 Hard limits
+
+The SC patch does not remove all engine constraints:
+
+- the generated runtime header/tables must fit the fixed `0x2000` bytes;
+- sector counts and global bases/counts remain `u16`;
+- runtime buffer size must match a supported Thumb immediate;
+- actual runtime heap availability requires emulator/hardware testing;
+- glyph IDs remain bounded to 3,602.
+
+## 12. Charset and `lt.bin`
+
+### 12.1 Renderer geometry
+
+`FUN_8102d78c` selects the 24-pixel path in `FUN_8102d194`. The renderer:
+
+- rejects glyph IDs `>= 0x0e12`;
+- computes `glyph_id × 0x120`;
+- reads 12 packed bytes per row;
+- expands low nibble, then high nibble;
+- processes 24 rows.
+
+Therefore:
+
+```text
+glyph count       0x0e12 = 3,602
+glyph geometry    24 × 24
+storage           4 bits/pixel
+bytes per glyph   0x120
+addressed bytes   0x0e12 × 0x120 = 0x0fd440
+file allocation   0x0fd800
+tail              0x3c0 bytes
+```
+
+### 12.2 Tail policy
+
+A whole-ELF absolute-address census found the `lt.bin` base pointer only in
+allocation/loading and glyph/string-render paths using the same renderer
+family. All located glyph consumers stop at `0x0fd440`. Zero-filling the
+`0x3c0`-byte tail is functionally supported by located consumers; exact binary
+round-trip retains it because no producer/checksum routine explains its source.
+
+### 12.3 Unicode mapping
+
+`lt.bin` stores bitmaps, not Unicode values. The stable charset is a compacted
+JIS X 0208 assigned-character ordering with engine-specific adjustments:
+
+```text
+ID 0x0000..0x00cf  assigned JIS ordinal unchanged
+ID 0x00d0          engine alias for ー
+ID 0x00d1..0x01ea  assigned ordinal +1
+ID 0x01eb..0x0e11  assigned ordinal +33
+```
+
+The final displacement accounts for the omitted 32-cell box-drawing range plus
+the earlier net adjustment. `codec/charset.rs` embeds all 3,602 code points and
+the validator checks known corpus positions such as `ス` and `任`.
+
+## 13. `pr.bin`
+
+`FUN_81053670` bounds IDs to 35 and indexes the offset table at `0x81113308`,
+proving slot boundaries but not a single grammar.
+
+At least three incompatible consumer families are direct evidence:
+
+1. normal package paths through `FUN_81053788`/`FUN_810538ec`;
+2. direct palette/texture slots around IDs `0x0b..0x0e`, where
+   `FUN_8100ae84` treats the slot base as palette data and `slot + 0x40` as a
+   texture descriptor;
+3. compressed atlas slots `0x20..0x22`, where `FUN_8103ef36` uses executable
+   offset tables, decompresses a selected record, and copies 50 rows of
+   `0x160` bytes into a destination stride of `0x200`.
+
+A universal package parser would corrupt at least two families. Stable 1.0
+therefore supports explicit raw extraction/rebuild only. Editable PR requires a
+separate proven encoder for every slot family.
+
+## 14. Rebuild safety invariants
+
+The engine consumes package bytes after a fixed sequence of operations: select a
+chunk table, inflate each block into a destination buffer at `index * stride`,
+install descriptor metadata, copy texture storage, and then copy palette storage
+when present. The rebuild pipeline treats this engine-observed post-inflate GPU
+buffer as the authoritative target, not the PNG alone and not the packed GZIP
+stream alone.
+
+The implemented image rebuild contract follows these invariants:
+
+1. the package profile, descriptor fields, table shape and source fingerprints
+   are checked before any write;
+2. edited PNG pixels are encoded into the same physical GPU layout proven by the
+   descriptor and loader path;
+3. BC1/BC2/BC3 blocks that are visually unchanged retain their original block
+   bytes, while changed blocks are encoded with source endpoints as seeds and
+   edge texels outside the visible rectangle preserved;
+4. P4/P8 textures rebuild palette and index data together, preserving stable
+   source indices when possible and using deterministic quantization only when
+   the edited image exceeds the native palette capacity;
+5. only destination chunks whose bytes changed are recompressed;
+6. the rebuilt package is parsed and inflated again, and the resulting aggregate
+   GPU buffer must exactly match the intended encoded buffer before CPK packing;
+7. lossy texture formats are editable by default, but an edit must be
+   representable in the target format and must survive the package-level
+   verification pass;
+8. unproven package or texture layouts fail before archive writing rather than
+   falling back to an opaque raw payload in editable mode.
+
+Script rebuild follows the same principle: the assembler regenerates the engine
+regions that are structurally understood, preserves machine-managed metadata in
+the companion document, reparses the generated entry, and requires matching
+allocation and relocation invariants before the rebuilt `sc.cpk` is emitted.
+
+`lt.bin` rebuild is constrained by the renderer's proven addressing formula:
+3,602 glyphs, `24 x 24` pixels, 4 bits per pixel, `0x120` bytes per glyph. The
+addressed glyph region is rebuilt from the atlas and the non-rendered tail is
+kept under explicit policy rather than inferred as hidden texture data.
+
+`pr.bin` remains outside editable image rebuild because the executable proves
+slot boundaries but also proves incompatible consumer grammars. Treating all PR
+slots as one package family would violate the safety rule above.
+
+## 15. Primary routine index
+
+| Routine/address | Role |
+|---|---|
+| `FUN_810224bc` | resource registry installation |
+| `FUN_8101b504` | major resource/runtime allocations |
+| `FUN_81053b7a` | fixed-sector archive entry reader |
+| `FUN_81066e32` | ITOC subtable search |
+| `FUN_81066ed2` | merged ITOC prefix-size calculation |
+| `FUN_8106706c` | combined DataL/DataH lookup |
+| `FUN_81053694` | shared compressed image-package loader |
+| `FUN_81034e4a` | GZIP block wrapper |
+| `FUN_810225fa` | supplemental `0x20`-byte record installer |
+| `FUN_81053fa6` | ADDPT/PT bundle loader |
+| `FUN_81053cda` | BK package/runtime surface path |
+| `FUN_8101d4c8` / `FUN_8101fde8` / `FUN_8101fea6` | BSF streaming path |
+| `FUN_8102fdca` | texture byte copy |
+| `FUN_8102fd82` | palette byte copy |
+| `FUN_81053cb6` | SC entry load |
+| `FUN_81019b6c` | SC reload and VM initialization |
+| `FUN_8101a6ea` / `FUN_81000512` | SC entry/runtime layout initialization |
+| `FUN_8101666c` | voice block initialization |
+| `FUN_810003b2` | stream-ID resolver |
+| `FUN_8100132c` | main script interpreter |
+| `FUN_81006a86` / `FUN_8104e0a6` / `FUN_8104df94` | dialogue parser path |
+| `FUN_8101c516` family | SC global base/count consumers |
+| `FUN_8102d78c` / `FUN_8102d194` | 24-pixel LT glyph renderer |
+| `FUN_81053670` | PR slot lookup |
+| `FUN_8100ae84` | PR direct palette/texture path |
+| `FUN_8103ef36` | PR compressed atlas path |

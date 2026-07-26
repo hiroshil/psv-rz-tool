@@ -1,0 +1,31 @@
+[script base/runtime pointer references in output.c]
+300: return DAT_81147d28 + *(int *)(DAT_811486d4 + (uint)param_1 * 4);
+447: DAT_81147d28 = DAT_811486d4;
+450: DAT_81147d2c = (int)DAT_811486d4 + *DAT_811486d4;
+559: DAT_81148718 = (int)DAT_811486d0 + DAT_81148708;
+563: DAT_8114871c = (int)DAT_811486d0 + DAT_81148710;
+570: *local_3c = *local_34 + DAT_811486d4[uVar7];
+583: *local_3c = (int)DAT_811486d4 + *(int *)(DAT_81148718 + (uint)DAT_811b6924 * 4);
+613: FUN_8104e404((int)DAT_811486d4 + piVar1[*(ushort *)(puVar11 + 0x88) + 4],DAT_81148704,
+1039: psVar3 = (short *)(DAT_81147d28 + *(int *)(DAT_811486d4 + (uint)uVar1 * 4));
+1048: psVar3 = (short *)(DAT_81147d28 + *(int *)(DAT_811486d4 + (uint)uVar1 * 4));
+1056: psVar3 = (short *)(DAT_81147d28 + *(int *)(DAT_811486d4 + (uint)uVar1 * 4));
+23013: DAT_811486d4 = DAT_811b98f0 + 0x2000;
+
+[FUN_810003B2 call sites]
+1647: DAT_81147d2c = (ushort *)FUN_810003b2(puVar15[3]);
+1890: DAT_81147d2c = (ushort *)FUN_810003b2(DAT_81147d2c[iVar12]);
+8936: psVar6 = (short *)FUN_810003b2(local_3c);
+10911: DAT_81147d2c = FUN_810003b2(local_18[0]);
+19863: DAT_81147d2c = FUN_810003b2(*(undefined2 *)(DAT_81147d2c + 4));
+19921: DAT_81147d2c = FUN_810003b2(*(undefined2 *)(DAT_81147d2c + 4));
+19963: DAT_81147d2c = FUN_810003b2(*(undefined2 *)(DAT_81147d2c + 4));
+19990: DAT_81147d2c = FUN_810003b2(*(undefined2 *)(DAT_81147d2c + 4));
+20015: DAT_81147d2c = FUN_810003b2(*(undefined2 *)(DAT_81147d2c + 4));
+20076: iVar2 = FUN_810003b2(*(undefined2 *)(DAT_81147d2c + 6));
+20110: iVar3 = FUN_810003b2(*(undefined2 *)(DAT_81147d2c + 6));
+20150: DAT_81147d2c = FUN_810003b2(*(undefined2 *)(iVar1 + (uint)bVar3 * 2 + 2));
+20255: DAT_81147d2c = FUN_810003b2(puVar6[0x10]);
+20423: iVar2 = FUN_810003b2(*(undefined2 *)(DAT_81147d2c + 10));
+20469: DAT_81147d2c = FUN_810003b2();
+21237: DAT_81147d2c = FUN_810003b2(*(undefined2 *)(DAT_81147d2c + 2));
