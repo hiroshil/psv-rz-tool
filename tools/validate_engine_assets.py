@@ -68,7 +68,30 @@ def validate_source() -> dict:
     charset = read("crates/rz-assets/src/codec/charset.rs")
     cli = read("crates/rz-tool/src/main.rs")
     package = read("crates/rz-assets/src/codec/engine_package.rs")
+    lt_font = read("crates/rz-assets/src/codec/lt_font.rs")
     gxt = read("crates/rz-assets/src/codec/gxt.rs")
+
+    assert "const ENGINE_INTEGRITY_FOOTER_SIZE: usize = 0x10" in package
+    assert "const ENGINE_INTEGRITY_SEED: u64 = 0x1111_1111_1111_1111" in package
+    assert "fn compute_engine_integrity_footer(" in package
+    assert "fn regenerate_engine_integrity_footer(" in package
+    assert "fn verify_engine_integrity_footer(" in package
+    assert "FUN_8102B4AC is installed as the common fixed-sector CPK read callback" in package
+    assert "regenerate_engine_integrity_footer(&mut output)" in package
+    assert "engine_integrity_footer_matches_two_seeded_u64_lanes" in package
+    assert "engine_integrity_footer_changes_after_texture_bytes_change" in package
+    assert (ROOT / "tools/fix_cpk_integrity.py").is_file()
+    assert (ROOT / "tools/fix_lt_integrity.py").is_file()
+    assert "TAIL_PAYLOAD_SIZE: usize = TAIL_SIZE - ENGINE_INTEGRITY_FOOTER_SIZE" in lt_font
+    assert "verify_engine_integrity_footer(input)" in lt_font
+    assert "decoded[..TAIL_PAYLOAD_SIZE].to_vec()" in lt_font
+    assert "regenerate_engine_integrity_footer(&mut output)" in lt_font
+    assert "rebuilt lt.bin failed integrity verification" in lt_font
+    assert "lt_integrity_footer_changes_after_glyph_edit" in lt_font
+    assert "0x8101a9de reads the standalone record" in lt_font
+    evidence = read("CAPSTONE_EVIDENCE.txt")
+    assert "[standalone_integrity_loader: startup state machine @ 0x8101a9de]" in evidence
+    assert "it calls 0x8110C328 (FUN_8102B4AC)" in evidence
 
     assert "PROJECT_SCHEMA_VERSION: u32 = 1" in manifest
     assert "const DOCUMENT_VERSION: u32 = 1" in script

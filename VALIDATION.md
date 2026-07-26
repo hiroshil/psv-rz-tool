@@ -27,6 +27,12 @@ The source checks require:
 - extraction-time byte-exact IR reassembly, including secondary relocation records;
 - exact SC integrity-footer verification and regeneration matching `FUN_8102B4AC`:
   two little-endian wrapping `u64` lane sums seeded with `0x1111111111111111`;
+- the same common-reader footer regeneration in the image-package encoder,
+  performed after fixed-allocation padding for ADDPT/BK/BSF/PT;
+- a generic `tools/fix_cpk_integrity.py` repair/check path for archives emitted
+  by older builds with stale image-entry footers;
+- source verification and footer regeneration for standalone `lt.bin`, plus
+  `tools/fix_lt_integrity.py` for files built by older atlas encoders;
 - source-aware BC encoding, automatic P4/P8 palette rebuild, incremental GZIP
   chunk reuse and rebuilt-package verification;
 - the complete 3,602-codepoint charset table;
@@ -99,3 +105,29 @@ cargo build --release -p rz-tool
 13. Test growth beyond stock allocation with companion ELF output, then re-open
     the generated ELF and verify all three patched regions.
 14. Boot affected scenes in an emulator and, where possible, target hardware.
+
+## BK texture integrity regression
+
+The supplied `bk.cpk` regression was executed with entry `325` (`00325-000.png`):
+
+1. stock archive: all 326 fixed allocations match `FUN_8102B4AC`;
+2. no-edit rebuild: entry 325 is byte-identical and all 326 footers match;
+3. one-pixel edit using the old serializer: package/GZIP reparses and remains
+   within `0x111000`, but footer 325 is stale and only 325/326 entries validate;
+4. footer regeneration: all 326 entries validate and re-extraction reproduces
+   the edited 1024x544 RGBA image exactly.
+
+
+## LT atlas integrity regression
+
+The supplied `lt.bin.org` regression verifies the standalone startup loader:
+
+1. the file is exactly `0xFD800` bytes (`0x1FB` sectors);
+2. glyph data occupies `0xFD440` bytes and the final `0x10` bytes are the
+   `FUN_8102B4AC` footer;
+3. the stock footer `71f70d807e60ce6c9129df8e1a01f723` reproduces exactly;
+4. no-edit rebuilding with the previous encoder is byte-identical;
+5. changing atlas pixel `(0,0)` changes one glyph byte but leaves a stale footer
+   in the previous build, so verification fails;
+6. regenerating the footer changes `71` to `80` at offset `0xFD7F0`, verification
+   passes, and re-extraction preserves the edited pixel.

@@ -52,5 +52,21 @@
     "metadata_records": 89,
     "patch_sites_mapped": 3
   },
-  "capstone_report_exact": true
+  "capstone_report_exact": true,
+  "lt_integrity": {
+    "file_size": 1038336,
+    "glyph_data_size": 1037376,
+    "tail_payload_size": 944,
+    "footer_size": 16,
+    "stock_footer": "71f70d807e60ce6c9129df8e1a01f723",
+    "stock_footer_valid": true,
+    "no_edit_byte_exact": true,
+    "old_one_pixel_footer_valid": false,
+    "fixed_one_pixel_footer": "80f70d807e60ce6c9129df8e1a01f723",
+    "fixed_one_pixel_footer_valid": true,
+    "fixed_diff_offsets": [
+      "0x0",
+      "0xfd7f0"
+    ]
+  }
 }

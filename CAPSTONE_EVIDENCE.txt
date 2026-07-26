@@ -210,6 +210,32 @@ bk-loader-b     0x8112b8d8: size=0x220000 ptr=0x0 palette=0x0 type=0x60000000 fo
 33: 0x00bc5550
 34: 0x00e46190
 
+[standalone_integrity_loader: startup state machine @ 0x8101a9de]
+Loads LT/PR/SE records from 0x81129E58. After asynchronous I/O, it calls 0x8110C328 (FUN_8102B4AC) with destination and exact byte size.
+8101aa70: movw       r0, #0x98e4
+8101aa74: movt       r0, #0x811b
+8101aa78: ldr        r0, [r0]
+8101aa7a: movw       r1, #0x9e58
+8101aa82: movt       r1, #0x8112
+8101aa86: str        r0, [r1, #0xc]
+8101abdc: movw       r1, #0x9e58
+8101abe0: movt       r1, #0x8112
+8101abe6: ldr        r2, [r0, r1]
+8101abea: ldr        r3, [r0, #8]
+8101abf0: ldr        r4, [r0, #0xc]
+8101abf6: ldr        r5, [r1, #0x20]
+8101abf8: adds       r0, r2, #0
+8101abfa: adds       r2, r3, #0
+8101abfc: adds       r1, r4, #0
+8101ac00: blx        r5
+8101ac54: movw       r1, #0x9e58
+8101ac58: movt       r1, #0x8112
+8101ac60: ldr        r3, [r0, #4]
+8101ac66: ldr        r0, [r0, #0xc]
+8101ac6c: ldr        r2, [r2, #0x30]
+8101ac70: blx        r2
+8101ac72: cmp        r0, #2
+
 [direct caller census]
 entry_reader 0x81053b7a:
   0x8104d5cc FUN_8104d4b4
@@ -345,7 +371,7 @@ Entries 0 and 1 point directly to FUN_8102d78c and FUN_8102d194; located string-
 lt glyph bytes: 0xE12 * 0x120 = 0xfd440
 lt allocation: 0x1FB * 0x800 = 0xfd800
 lt non-glyph tail: 0x3c0 bytes
-Static conclusion: zero-filling the tail is functionally supported by all located glyph consumers; byte-identical reconstruction still requires preserving it because no producer/checksum routine was found.
+The renderer stops at 0xfd440, but the standalone loader verifies the full 0xfd800 allocation through FUN_8102B4AC. The first 0x3b0 tail bytes are non-glyph data/padding; the final 0x10 bytes are the mandatory integrity footer.
 
 [registry: FUN_810224bc @ 0x810224bc]
 Selected routine evidence.

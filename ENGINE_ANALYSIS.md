@@ -905,13 +905,28 @@ file allocation   0x0fd800
 tail              0x3c0 bytes
 ```
 
-### 12.2 Tail policy
+### 12.2 Standalone loader and integrity tail
 
-A whole-ELF absolute-address census found the `lt.bin` base pointer only in
-allocation/loading and glyph/string-render paths using the same renderer
-family. All located glyph consumers stop at `0x0fd440`. Zero-filling the
-`0x3c0`-byte tail is functionally supported by located consumers; exact binary
-round-trip retains it because no producer/checksum routine explains its source.
+The earlier renderer-only audit was incomplete. The startup state machine at
+`0x8101a9de` indexes the standalone table at `0x81129e58`. For resource ID 7 it
+loads `0x1fb` sectors into `DAT_811b98e4`, polls completion, then calls the
+function pointer at `0x8110c328` as `(destination, byte_size)`. That pointer is
+`0x8102b4ad`, selecting Thumb routine `FUN_8102b4ac`. A mismatch prevents the
+state machine from advancing.
+
+All located glyph consumers still stop at `0x0fd440`, but the remaining bytes
+are split as follows:
+
+```text
+0xfd440..0xfd7ef  0x3b0 bytes tail/padding
+0xfd7f0..0xfd7ff  0x10 bytes two-lane integrity footer
+```
+
+The supplied `lt.bin` has zero-filled tail/padding and footer
+`71f70d807e60ce6c9129df8e1a01f723`, reproduced exactly by `FUN_8102b4ac`'s
+algorithm. Build may preserve or zero-fill the first `0x3b0` bytes according to
+project policy, but it must always regenerate the last `0x10` bytes after the
+font atlas has been encoded.
 
 ### 12.3 Unicode mapping
 
@@ -1022,3 +1037,93 @@ slots as one package family would violate the safety rule above.
 | `FUN_81053670` | PR slot lookup |
 | `FUN_8100ae84` | PR direct palette/texture path |
 | `FUN_8103ef36` | PR compressed atlas path |
+
+## 11. Common fixed-sector integrity callback
+
+The earlier analysis incorrectly scoped `FUN_8102B4AC` first to scenario
+entries and then only to CPK entries. `FUN_81053B7A` is the shared fixed-sector
+reader used by BK, BSF, PT, ADDPT and SC callers. The standalone LT/PR/SE state
+machine at `0x8101A9DE` invokes the same callback after its own asynchronous
+reads. The CPK reader's completed-read branch loads the callback from
+`0x8110C2F8 + 0x30 = 0x8110C328` and invokes it as `(buffer, sectors << 11)`.
+The executable stores `0x8102B4AD` at that address, selecting Thumb routine
+`FUN_8102B4AC`.
+
+Relevant instructions:
+
+```text
+FUN_81053B7A
+81053c7c  ldr   r2, [r0, #0x30]
+81053c7e  lsls  r1, r6, #0xb
+81053c80  adds  r0, r7, #0
+81053c82  blx   r2
+81053c84  cmp   r0, #1
+
+FUN_8102B4AC
+8102b4b2  add.w ip, r1, r0
+8102b4b6  ldrd  r6, r7, [ip, #-0x10]
+8102b4be  ldrd  r8, sb, [ip, #-0x8]
+8102b4c6  subs  r1, #0x10
+8102b4d0  ldm.w r0, {sl, fp}
+8102b4d6  adds.w r2, r2, sl
+8102b4da  adc.w r3, r3, fp
+8102b4de  ldrd  sl, fp, [r0, #8]
+8102b4e2  adds.w r4, r4, sl
+8102b4ea  adc.w r5, r5, fp
+8102b4f2..8102b500 compare both calculated u64 lanes with the final 16 bytes
+```
+
+
+The standalone loader performs the equivalent verification after loading LT:
+
+```text
+8101abdc  movw  r1, #0x9e58
+8101abe0  movt  r1, #0x8112       ; standalone table
+8101abe6  ldr   r2, [r0, r1]      ; resource ID
+8101abea  ldr   r3, [r0, #8]      ; sector count
+8101abf0  ldr   r4, [r0, #0xc]    ; destination
+8101ac00  blx   r5                ; begin asynchronous read
+...
+8101ac54  movw  r1, #0x9e58
+8101ac60  ldr   r3, [r0, #4]      ; exact byte size
+8101ac66  ldr   r0, [r0, #0xc]    ; destination
+8101ac6c  ldr   r2, [r2, #0x30]   ; 0x8110c328
+8101ac70  blx   r2                ; FUN_8102b4ac(buffer, size)
+8101ac72  cmp   r0, #2
+```
+
+For LT, the table record is resource ID 7, size `0xfd800`, sectors `0x1fb`.
+
+`FUN_81053CDA` proves BK uses that reader before package decompression:
+
+```text
+81053da0  adds  r1, r5, #0
+81053da2  bl    0x81021034       ; executable sector count
+81053da6  adds  r2, r0, #0
+81053da8  adds  r1, r6, #0      ; destination allocation
+81053dac  movs  r0, #4          ; bk.cpk registry index
+81053dae  bl    0x81053b7a
+81053db2  cmp   r0, #0
+81053db4  beq   load failure
+```
+
+The checksum is therefore a fixed-allocation resource invariant, not image
+metadata, not an SC-only footer, and not limited to CPK containers. On the
+supplied `bk.cpk`:
+
+```text
+stock entries valid       326/326
+no-edit rebuilt valid     326/326
+one-pixel old-tool build  325/326 (entry 325 stale)
+footer-regenerated build  326/326
+```
+
+For entry 325, the original footer is
+`c61022978231856927f537a2f1992222`; after changing pixel `(512,272)` from
+`FFFFFFFF` to `00FFFFFF`, the required footer becomes
+`53185a780ff7c24255f913de1533f7ef`. The old image serializer preserved the
+former value and the common reader rejected the entry before GZIP processing.
+
+The corrected image encoder writes the footer only after output is padded to
+the exact executable allocation. This also prevents a future package relocation
+or recompression path from calculating the checksum over an intermediate size.

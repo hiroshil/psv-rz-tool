@@ -21,6 +21,8 @@ const SECONDARY_TABLE_OFFSET: usize = 0x1400;
 const DOCUMENT_VERSION: u32 = 1;
 const MAX_CHUNKS: usize = 0xff;
 const SCRATCH_CAPACITY: usize = 0x1800000;
+pub(crate) const ENGINE_INTEGRITY_FOOTER_SIZE: usize = 0x10;
+const ENGINE_INTEGRITY_SEED: u64 = 0x1111_1111_1111_1111;
 
 const TEXTURE_TYPE_LINEAR: u32 = 0x6000_0000;
 const FORMAT_BASE_MASK: u32 = 0xff00_0000;
@@ -344,6 +346,12 @@ pub fn decode(
     }
     let mut working = input.to_vec();
     working.resize(allocation_size, 0);
+    verify_engine_integrity_footer(&working).map_err(|error| {
+        AssetError::InvalidProject(format!(
+            "source {} entry ID {entry_id} integrity footer mismatch: {error}",
+            profile_name(profile)
+        ))
+    })?;
 
     let (wrapped_bundle, bundle_prefix, bundle_map, ranges) = if profile.uses_bundle() {
         let bundle = parse_bundle(&working)?;
@@ -458,6 +466,20 @@ pub fn encode(document_path: &Path) -> Result<Vec<u8>, AssetError> {
         )));
     }
     output.resize(allocation_size, 0);
+    regenerate_engine_integrity_footer(&mut output).map_err(|error| {
+        AssetError::InvalidProject(format!(
+            "failed to generate {} entry ID {} integrity footer: {error}",
+            profile_name(document.profile),
+            document.entry_id
+        ))
+    })?;
+    verify_engine_integrity_footer(&output).map_err(|error| {
+        AssetError::InvalidProject(format!(
+            "rebuilt {} entry ID {} failed integrity verification: {error}",
+            profile_name(document.profile),
+            document.entry_id
+        ))
+    })?;
     Ok(output)
 }
 
@@ -2388,6 +2410,75 @@ fn hex_nibble(value: u8) -> Option<u8> {
     }
 }
 
+
+pub(crate) fn compute_engine_integrity_footer(
+    input: &[u8],
+) -> Result<[u8; ENGINE_INTEGRITY_FOOTER_SIZE], String> {
+    if input.len() % 0x10 != 0 {
+        return Err(format!(
+            "integrity checksum input has {:#x} bytes, expected a multiple of 0x10",
+            input.len()
+        ));
+    }
+
+    // FUN_8102B4AC is installed as the common fixed-sector CPK read callback
+    // at 0x8110C328. It treats each 16-byte block as two little-endian u64
+    // lanes, seeds both with 0x1111111111111111, and compares the final sums
+    // with the last 16 bytes of the allocation.
+    let mut lane_0 = ENGINE_INTEGRITY_SEED;
+    let mut lane_1 = ENGINE_INTEGRITY_SEED;
+    for chunk in input.chunks_exact(0x10) {
+        lane_0 = lane_0.wrapping_add(u64::from_le_bytes(
+            chunk[..8]
+                .try_into()
+                .expect("16-byte checksum chunk always contains first u64"),
+        ));
+        lane_1 = lane_1.wrapping_add(u64::from_le_bytes(
+            chunk[8..]
+                .try_into()
+                .expect("16-byte checksum chunk always contains second u64"),
+        ));
+    }
+
+    let mut footer = [0u8; ENGINE_INTEGRITY_FOOTER_SIZE];
+    footer[..8].copy_from_slice(&lane_0.to_le_bytes());
+    footer[8..].copy_from_slice(&lane_1.to_le_bytes());
+    Ok(footer)
+}
+
+pub(crate) fn regenerate_engine_integrity_footer(output: &mut [u8]) -> Result<(), String> {
+    if output.len() < ENGINE_INTEGRITY_FOOTER_SIZE {
+        return Err(format!(
+            "allocation has {:#x} bytes, shorter than the 16-byte integrity footer",
+            output.len()
+        ));
+    }
+    let footer_start = output.len() - ENGINE_INTEGRITY_FOOTER_SIZE;
+    let footer = compute_engine_integrity_footer(&output[..footer_start])?;
+    output[footer_start..].copy_from_slice(&footer);
+    Ok(())
+}
+
+pub(crate) fn verify_engine_integrity_footer(input: &[u8]) -> Result<(), String> {
+    if input.len() < ENGINE_INTEGRITY_FOOTER_SIZE {
+        return Err(format!(
+            "allocation has {:#x} bytes, shorter than the 16-byte integrity footer",
+            input.len()
+        ));
+    }
+    let footer_start = input.len() - ENGINE_INTEGRITY_FOOTER_SIZE;
+    let expected = compute_engine_integrity_footer(&input[..footer_start])?;
+    let stored = &input[footer_start..];
+    if stored != expected.as_slice() {
+        return Err(format!(
+            "stored {}, expected {}",
+            encode_hex(stored),
+            encode_hex(&expected)
+        ));
+    }
+    Ok(())
+}
+
 fn write_u32(output: &mut [u8], offset: usize, value: u32) -> Result<(), AssetError> {
     let target = output.get_mut(offset..offset + 4).ok_or_else(|| {
         AssetError::InvalidProject("package u32 write exceeds generated package layout".to_owned())
@@ -2425,6 +2516,38 @@ fn align_up(value: usize, alignment: usize) -> Result<usize, AssetError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn engine_integrity_footer_matches_two_seeded_u64_lanes() {
+        let mut input = Vec::new();
+        input.extend_from_slice(&1u64.to_le_bytes());
+        input.extend_from_slice(&2u64.to_le_bytes());
+        input.extend_from_slice(&3u64.to_le_bytes());
+        input.extend_from_slice(&4u64.to_le_bytes());
+        let footer = compute_engine_integrity_footer(&input).unwrap();
+        assert_eq!(
+            footer,
+            [
+                0x15, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+                0x17, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+            ]
+        );
+    }
+
+    #[test]
+    fn engine_integrity_footer_changes_after_texture_bytes_change() {
+        let mut allocation = vec![0u8; 0x800];
+        regenerate_engine_integrity_footer(&mut allocation).unwrap();
+        let original = allocation[allocation.len() - ENGINE_INTEGRITY_FOOTER_SIZE..].to_vec();
+        allocation[0x123] ^= 0x5a;
+        assert!(verify_engine_integrity_footer(&allocation).is_err());
+        regenerate_engine_integrity_footer(&mut allocation).unwrap();
+        assert!(verify_engine_integrity_footer(&allocation).is_ok());
+        assert_ne!(
+            original,
+            allocation[allocation.len() - ENGINE_INTEGRITY_FOOTER_SIZE..]
+        );
+    }
 
     #[test]
     fn bundle_allows_aliases_and_non_monotonic_logical_offsets() {

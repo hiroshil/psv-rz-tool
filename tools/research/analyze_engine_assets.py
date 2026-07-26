@@ -415,6 +415,35 @@ def report_static_tables(image: ElfImage) -> None:
     print()
 
 
+def report_standalone_integrity_loader(image: ElfImage) -> None:
+    """Report the hidden startup state machine between mapped functions.
+
+    Ghidra's mapper terminates FUN_8101A9C0 at 0x8101A9DE even though the
+    following contiguous state-machine body owns the standalone LT/PR/SE load.
+    Disassemble the exact range directly so the integrity call is reproducible.
+    """
+    start = 0x8101A9DE
+    end = 0x8101AD2C
+    selected = {
+        0x8101AA70, 0x8101AA74, 0x8101AA78, 0x8101AA7A,
+        0x8101AA82, 0x8101AA86,
+        0x8101ABDC, 0x8101ABE0, 0x8101ABE6, 0x8101ABEA,
+        0x8101ABF0, 0x8101ABF6, 0x8101ABF8, 0x8101ABFA,
+        0x8101ABFC, 0x8101AC00,
+        0x8101AC54, 0x8101AC58, 0x8101AC60, 0x8101AC66,
+        0x8101AC6C, 0x8101AC70, 0x8101AC72,
+    }
+    md = Cs(CS_ARCH_ARM, CS_MODE_THUMB | CS_MODE_LITTLE_ENDIAN)
+    instructions = list(md.disasm(image.read(start, end - start), start))
+    print("[standalone_integrity_loader: startup state machine @ 0x8101a9de]")
+    print(
+        "Loads LT/PR/SE records from 0x81129E58. After asynchronous I/O, "
+        "it calls 0x8110C328 (FUN_8102B4AC) with destination and exact byte size."
+    )
+    print_selected(instructions, selected)
+    print()
+
+
 def parse_direct_target(op_str: str) -> int | None:
     if not op_str.startswith("#0x"):
         return None
@@ -535,7 +564,7 @@ def report_derived_limits() -> None:
     print(f"lt glyph bytes: 0xE12 * 0x120 = {glyph_bytes:#x}")
     print(f"lt allocation: 0x1FB * 0x800 = {0x1FB * 0x800:#x}")
     print(f"lt non-glyph tail: {0x1FB * 0x800 - glyph_bytes:#x} bytes")
-    print("Static conclusion: zero-filling the tail is functionally supported by all located glyph consumers; byte-identical reconstruction still requires preserving it because no producer/checksum routine was found.")
+    print("The renderer stops at 0xfd440, but the standalone loader verifies the full 0xfd800 allocation through FUN_8102B4AC. The first 0x3b0 tail bytes are non-glyph data/padding; the final 0x10 bytes are the mandatory integrity footer.")
     print()
 
 
@@ -548,6 +577,7 @@ def main() -> int:
     functions = FunctionMap(args.mapper)
 
     report_static_tables(image)
+    report_standalone_integrity_loader(image)
     report_call_census(image, functions)
     report_absolute_reference_census(image, functions)
     report_function_pointer_tables(image)

@@ -241,9 +241,11 @@ lt-atlas.png
 ```
 
 `lt-atlas.png` is the editable glyph atlas. `lt-font.json` records the fixed
-font geometry, atlas path, atlas column count and tail policy. The bytes
-`0xfd440..0xfd7ff` are stored inline as `tail_hex` when exact binary round-trip
-is requested; extraction does not create a separate `lt-tail.bin`.
+font geometry, atlas path, atlas column count and tail policy. For schema
+compatibility, bytes `0xfd440..0xfd7ff` remain inline as `tail_hex`; extraction
+does not create a separate `lt-tail.bin`. The last 16 bytes in that field are
+not copied during build: they are the common engine integrity footer and are
+regenerated after the atlas and the preceding `0x3b0` tail bytes are written.
 
 ### Raw-only projects
 
@@ -287,6 +289,40 @@ Build follows that contract:
 
 Supported lossy formats are editable by default. There is no opt-in flag and no
 copy-only mode disguised as safety.
+
+## Fixed-sector resource integrity footer
+
+The engine does not accept arbitrary bytes merely because file/ITOC and sector
+sizes are correct. The common CPK reader `FUN_81053B7A` and the standalone
+resource state machine at `0x8101A9DE` both call the function pointer at
+`0x8110C328`, whose executable value is Thumb address `0x8102B4AD`
+(`FUN_8102B4AC`). This applies to editable image archives, `sc.cpk`, and the
+standalone `lt.bin` allocation.
+
+Every fixed allocation ends in a 16-byte footer. The preceding bytes are split
+into 16-byte blocks and accumulated as two little-endian wrapping `u64` lanes,
+both seeded with `0x1111111111111111`. The final lane values are stored in the
+last 16 bytes. Image build now regenerates the footer only after package
+assembly, relocation, sector padding and palette/chunk writes are complete.
+Preserving the extracted footer after changing a PNG causes the reader to return
+failure before `FUN_81053694` can decompress the package.
+
+For archives created by an older build:
+
+```text
+python tools/fix_cpk_integrity.py broken-bk.cpk fixed-bk.cpk
+python tools/fix_cpk_integrity.py fixed-bk.cpk --check
+```
+
+The reference `bk.cpk` corpus verifies this invariant for 326/326 entries. A
+one-pixel edit to entry 325 invalidates only footer 325 until it is regenerated.
+The supplied stock `lt.bin` footer is also reproduced exactly. To repair an
+older atlas rebuild without re-encoding the font:
+
+```text
+python tools/fix_lt_integrity.py broken-lt.bin fixed-lt.bin
+python tools/fix_lt_integrity.py fixed-lt.bin --check
+```
 
 ## `sc.cpk`
 
@@ -353,7 +389,9 @@ When rebuilt entries exceed stock sector allocations, provide `--eboot-in` and
 The engine renderer accepts glyph IDs below `0x0e12`, addresses each glyph at
 `glyph_id × 0x120`, and expands 12 packed bytes per row for 24 rows, low nibble
 before high nibble. `lt.bin` therefore contains 3,602 glyphs of 24×24 pixels at
-4 bits per pixel.
+4 bits per pixel. The standalone loader verifies the complete `0xfd800`-byte
+allocation with `FUN_8102B4AC` before any glyph renderer uses it, so the last
+16 bytes must be regenerated after every atlas edit.
 
 `charset.json` maps Unicode to those existing glyph IDs. Editing glyph shapes
 requires rebuilding `lt.bin`; remapping characters requires a matching charset

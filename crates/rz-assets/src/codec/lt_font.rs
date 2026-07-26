@@ -4,6 +4,10 @@ use std::path::Path;
 use image::{Rgba, RgbaImage};
 use serde::{Deserialize, Serialize};
 
+use crate::codec::engine_package::{
+    regenerate_engine_integrity_footer, verify_engine_integrity_footer,
+    ENGINE_INTEGRITY_FOOTER_SIZE,
+};
 use crate::error::AssetError;
 
 const DOCUMENT_VERSION: u32 = 1;
@@ -14,14 +18,15 @@ const GLYPH_BYTES: usize = GLYPH_WIDTH * GLYPH_HEIGHT / 2;
 const GLYPH_DATA_SIZE: usize = GLYPH_COUNT * GLYPH_BYTES;
 const FILE_SIZE: usize = 0x0fd800;
 const TAIL_SIZE: usize = FILE_SIZE - GLYPH_DATA_SIZE;
+const TAIL_PAYLOAD_SIZE: usize = TAIL_SIZE - ENGINE_INTEGRITY_FOOTER_SIZE;
 const DEFAULT_COLUMNS: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum LtTailPolicy {
-    /// Preserve the original non-glyph bytes inline for byte-identical rebuild.
+    /// Preserve the original 0x3b0-byte non-glyph tail; regenerate the footer.
     PreserveInline,
-    /// Recreate the engine-ignored sector padding as zero bytes.
+    /// Recreate the 0x3b0-byte non-glyph tail as zero; regenerate the footer.
     ZeroFill,
 }
 
@@ -35,9 +40,10 @@ pub struct LtFontDocument {
     pub atlas: String,
     pub tail_policy: LtTailPolicy,
     pub tail_bytes: u32,
-    /// Hex-encoded bytes 0xfd440..0xfd7ff. The field is inline so extraction
-    /// does not create a separate lt-tail.bin. It is required only for exact
-    /// binary round-trip; the analyzed renderer never addresses this range.
+    /// Hex-encoded bytes 0xfd440..0xfd7ff, retained for project-schema
+    /// compatibility. Bytes 0xfd440..0xfd7ef are padding/preserved tail data.
+    /// Bytes 0xfd7f0..0xfd7ff are an engine integrity footer and are always
+    /// regenerated during build; a stale footer from this field is never copied.
     pub tail_hex: Option<String>,
 }
 
@@ -48,6 +54,9 @@ pub fn decode(input: &[u8], output_directory: &Path) -> Result<String, AssetErro
             input.len()
         )));
     }
+    verify_engine_integrity_footer(input).map_err(|error| {
+        AssetError::InvalidFormat(format!("lt.bin integrity footer mismatch: {error}"))
+    })?;
     let rows = GLYPH_COUNT.div_ceil(DEFAULT_COLUMNS);
     let mut atlas = RgbaImage::new(
         u32::try_from(DEFAULT_COLUMNS * GLYPH_WIDTH).unwrap(),
@@ -76,17 +85,15 @@ pub fn decode(input: &[u8], output_directory: &Path) -> Result<String, AssetErro
     let atlas_name = "lt-atlas.png";
     atlas.save(output_directory.join(atlas_name))?;
 
-    // FUN_8101b504 allocates exactly 0xfd800 bytes and FUN_8101a9c0 loads
-    // exactly 0x1fb sectors. The function-pointer table at 0x8110c470 points
-    // directly to FUN_8102d78c/FUN_8102d194. A whole-ELF immediate-reference
-    // census found DAT_811b98e4 only in allocation/loading and renderer-family
-    // call paths; the string rasterizer FUN_8104db86 dispatches through the
-    // same table entry. The 24px renderer rejects glyph_id >= 0x0e12 and reads
-    // glyph_id * 0x120 through +0x11f, so its maximum read ends at 0xfd43f.
-    // No located consumer, producer, or checksum routine addresses
-    // 0xfd440..0xfd7ff. Zero-fill is therefore the strongest static functional
-    // reconstruction; preserving the bytes remains necessary for exact binary
-    // identity because their original values cannot be derived.
+    // FUN_8101b504 allocates exactly 0xfd800 bytes. The startup state machine
+    // at 0x8101a9de reads the standalone record at 0x81129e58 (resource ID 7,
+    // 0x1fb sectors) into DAT_811b98e4. After I/O completes it calls the common
+    // verifier pointer at 0x8110c328, which resolves to FUN_8102b4ac, over the
+    // full 0xfd800-byte allocation. Therefore 0xfd7f0..0xfd7ff is not opaque
+    // renderer-ignored data: it is the same two-lane integrity footer used by
+    // fixed-sector CPK entries. The renderer itself still addresses only
+    // glyph_id * 0x120 through +0x11f and ends at 0xfd43f. The preceding
+    // 0x3b0 bytes are tail/padding; the final 0x10 bytes must be regenerated.
     let document = LtFontDocument {
         document_version: DOCUMENT_VERSION,
         glyph_count: u32::try_from(GLYPH_COUNT).unwrap(),
@@ -139,7 +146,7 @@ pub fn encode(document_path: &Path) -> Result<Vec<u8>, AssetError> {
         )));
     }
 
-    let tail = match document.tail_policy {
+    let tail_payload = match document.tail_policy {
         LtTailPolicy::PreserveInline => {
             let encoded = document.tail_hex.as_deref().ok_or_else(|| {
                 AssetError::InvalidProject(
@@ -153,9 +160,11 @@ pub fn encode(document_path: &Path) -> Result<Vec<u8>, AssetError> {
                     decoded.len()
                 )));
             }
-            decoded
+            // Keep the non-integrity tail for compatibility with existing
+            // projects, but never copy the extracted footer after an atlas edit.
+            decoded[..TAIL_PAYLOAD_SIZE].to_vec()
         }
-        LtTailPolicy::ZeroFill => vec![0u8; TAIL_SIZE],
+        LtTailPolicy::ZeroFill => vec![0u8; TAIL_PAYLOAD_SIZE],
     };
 
     let mut output = vec![0u8; GLYPH_DATA_SIZE];
@@ -179,7 +188,18 @@ pub fn encode(document_path: &Path) -> Result<Vec<u8>, AssetError> {
             output[destination + pair] = low | (high << 4);
         }
     }
-    output.extend_from_slice(&tail);
+    output.extend_from_slice(&tail_payload);
+    output.resize(FILE_SIZE, 0);
+    regenerate_engine_integrity_footer(&mut output).map_err(|error| {
+        AssetError::InvalidProject(format!(
+            "failed to generate lt.bin integrity footer: {error}"
+        ))
+    })?;
+    verify_engine_integrity_footer(&output).map_err(|error| {
+        AssetError::InvalidProject(format!(
+            "rebuilt lt.bin failed integrity verification: {error}"
+        ))
+    })?;
     debug_assert_eq!(output.len(), FILE_SIZE);
     Ok(output)
 }
@@ -240,7 +260,23 @@ mod tests {
     fn fixed_font_geometry_matches_engine_file_size() {
         assert_eq!(GLYPH_DATA_SIZE, 0x0fd440);
         assert_eq!(TAIL_SIZE, 0x3c0);
+        assert_eq!(TAIL_PAYLOAD_SIZE, 0x3b0);
         assert_eq!(0x1fb * 0x800, FILE_SIZE);
+    }
+
+    #[test]
+    fn lt_integrity_footer_changes_after_glyph_edit() {
+        let mut allocation = vec![0u8; FILE_SIZE];
+        regenerate_engine_integrity_footer(&mut allocation).unwrap();
+        let original = allocation[FILE_SIZE - ENGINE_INTEGRITY_FOOTER_SIZE..].to_vec();
+        allocation[0] = 0x0f;
+        assert!(verify_engine_integrity_footer(&allocation).is_err());
+        regenerate_engine_integrity_footer(&mut allocation).unwrap();
+        assert!(verify_engine_integrity_footer(&allocation).is_ok());
+        assert_ne!(
+            original,
+            allocation[FILE_SIZE - ENGINE_INTEGRITY_FOOTER_SIZE..].to_vec()
+        );
     }
 
     #[test]
