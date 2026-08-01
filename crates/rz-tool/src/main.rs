@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use rz_assets::{
-    build_project, describe_error_chain, extract_project, BuildOptions, ExtractOptions,
+    build_project, describe_error_chain, extract_project, BuildOptions, ExtractOptions, WrapMode,
 };
+use rz_assets::eboot;
 
 fn main() -> ExitCode {
     match run() {
@@ -24,6 +25,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     match command {
         "extract" => extract_command(&arguments[1..]),
+        "extract-alloc" => extract_alloc_command(&arguments[1..]),
         "build" => build_command(&arguments[1..]),
         "help" | "--help" | "-h" => {
             print_usage();
@@ -37,21 +39,51 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn extract_command(arguments: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let positional = arguments
-        .iter()
-        .filter(|argument| !argument.starts_with('-'))
-        .collect::<Vec<_>>();
+    let mut positional = Vec::<String>::new();
+    let mut charset_map = None::<PathBuf>;
+    let mut allocation_map = None::<PathBuf>;
+    let mut raw_only = false;
+    let mut debug_script_ir = false;
+    let mut use_stock_charset = false;
+    let mut use_stock_allocation = false;
+    let mut index = 0usize;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--raw-only" => raw_only = true,
+            "--debug-script-ir" => debug_script_ir = true,
+            "--use-stock-charset" => use_stock_charset = true,
+            "--use-stock-allocation" => use_stock_allocation = true,
+            "--charset-map" => {
+                index += 1;
+                let value = arguments.get(index).ok_or("--charset-map requires a path")?;
+                if charset_map.replace(PathBuf::from(value)).is_some() {
+                    return Err("--charset-map was provided more than once".into());
+                }
+            }
+            "--allocation-map" => {
+                index += 1;
+                let value = arguments.get(index).ok_or("--allocation-map requires a path")?;
+                if allocation_map.replace(PathBuf::from(value)).is_some() {
+                    return Err("--allocation-map was provided more than once".into());
+                }
+            }
+            value if value.starts_with('-') => return Err(format!("unknown option {value}").into()),
+            value => positional.push(value.to_owned()),
+        }
+        index += 1;
+    }
     if positional.len() != 2 {
         return Err("extract requires <input.cpk|lt.bin|pr.bin> <project-directory>".into());
     }
-    reject_unknown_flags(arguments, &["--raw-only", "--debug-script-ir"])?;
     let options = ExtractOptions {
-        raw_only: arguments.iter().any(|argument| argument == "--raw-only"),
-        debug_script_ir: arguments
-            .iter()
-            .any(|argument| argument == "--debug-script-ir"),
+        raw_only,
+        debug_script_ir,
+        charset_map,
+        allocation_map,
+        use_stock_charset,
+        use_stock_allocation,
     };
-    let report = extract_project(Path::new(positional[0]), Path::new(positional[1]), options)?;
+    let report = extract_project(Path::new(&positional[0]), Path::new(&positional[1]), options)?;
     println!(
         "extracted {} entries as {} project",
         report.files,
@@ -60,11 +92,30 @@ fn extract_command(arguments: &[String]) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
+fn extract_alloc_command(arguments: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if arguments.len() != 2 {
+        return Err("extract-alloc requires <eboot.bin.elf> <sc-allocation.json>".into());
+    }
+    let input = Path::new(&arguments[0]);
+    let output = Path::new(&arguments[1]);
+    if output.exists() {
+        return Err(format!("output already exists: {}", output.display()).into());
+    }
+    let map = eboot::extract_sc_allocation_map(input)?;
+    std::fs::write(output, serde_json::to_vec_pretty(&map)?)?;
+    println!("wrote SC allocation map for {} entries", map.entries.len());
+    Ok(())
+}
+
 fn build_command(arguments: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut positional = Vec::<String>::new();
     let mut eboot_in = None::<PathBuf>;
     let mut eboot_out = None::<PathBuf>;
     let mut charset_map = None::<PathBuf>;
+    let mut wrap_width_px = None::<u32>;
+    let mut wrap_width_table = None::<PathBuf>;
+    let mut wrap_rows = None::<u32>;
+    let mut wrap_mode = None::<WrapMode>;
     let mut index = 0usize;
     while index < arguments.len() {
         match arguments[index].as_str() {
@@ -89,6 +140,39 @@ fn build_command(arguments: &[String]) -> Result<(), Box<dyn std::error::Error>>
                     return Err("--charset-map was provided more than once".into());
                 }
             }
+            "--wrap-width-px" => {
+                index += 1;
+                let value = arguments.get(index).ok_or("--wrap-width-px requires a value")?;
+                if wrap_width_px.replace(value.parse::<u32>()?).is_some() {
+                    return Err("--wrap-width-px was provided more than once".into());
+                }
+            }
+            "--wrap-width-table" => {
+                index += 1;
+                let value = arguments.get(index).ok_or("--wrap-width-table requires a path")?;
+                if wrap_width_table.replace(PathBuf::from(value)).is_some() {
+                    return Err("--wrap-width-table was provided more than once".into());
+                }
+            }
+            "--wrap-mode" => {
+                index += 1;
+                let value = arguments.get(index).ok_or("--wrap-mode requires word or legacy")?;
+                let parsed = match value.as_str() {
+                    "word" => WrapMode::Word,
+                    "legacy" => WrapMode::Legacy,
+                    other => return Err(format!("--wrap-mode must be word or legacy, got {other:?}").into()),
+                };
+                if wrap_mode.replace(parsed).is_some() {
+                    return Err("--wrap-mode was provided more than once".into());
+                }
+            }
+            "--wrap-rows" => {
+                index += 1;
+                let value = arguments.get(index).ok_or("--wrap-rows requires a value")?;
+                if wrap_rows.replace(value.parse::<u32>()?).is_some() {
+                    return Err("--wrap-rows was provided more than once".into());
+                }
+            }
             value if value.starts_with('-') => {
                 return Err(format!("unknown option {value}").into());
             }
@@ -99,10 +183,23 @@ fn build_command(arguments: &[String]) -> Result<(), Box<dyn std::error::Error>>
     if positional.len() != 2 {
         return Err("build requires <project-directory> <output.cpk|lt.bin|pr.bin>".into());
     }
+    if wrap_width_px.is_some() && wrap_width_table.is_none() {
+        return Err("--wrap-width-px requires --wrap-width-table <font.cnf>".into());
+    }
+    if wrap_mode.is_some() && wrap_width_table.is_none() {
+        return Err("--wrap-mode requires --wrap-width-table <font.cnf>".into());
+    }
+    if wrap_rows.is_some() && wrap_width_table.is_none() {
+        return Err("--wrap-rows requires --wrap-width-table <font.cnf>".into());
+    }
     let options = BuildOptions {
         eboot_in,
         eboot_out,
         charset_map,
+        wrap_width_px,
+        wrap_width_table,
+        wrap_rows,
+        wrap_mode,
     };
     let report = build_project(Path::new(&positional[0]), Path::new(&positional[1]), options)?;
     println!(
@@ -118,14 +215,6 @@ fn build_command(arguments: &[String]) -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
-fn reject_unknown_flags(arguments: &[String], accepted: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
-    for argument in arguments.iter().filter(|argument| argument.starts_with('-')) {
-        if !accepted.contains(&argument.as_str()) {
-            return Err(format!("unknown option {argument}").into());
-        }
-    }
-    Ok(())
-}
 
 fn print_usage() {
     eprintln!(
@@ -133,18 +222,48 @@ fn print_usage() {
 
 Usage:
   rz-tool extract <input.cpk|lt.bin> <project-directory>
-  rz-tool extract <sc.cpk> <project-directory> --debug-script-ir
+  rz-tool extract-alloc <eboot.bin.elf> <sc-allocation.json>
+  rz-tool extract <sc.cpk> <project-directory> [--charset-map <font.tbl|charset.json>] [--allocation-map <sc-allocation.json>] [--debug-script-ir]
   rz-tool extract <input.cpk|lt.bin|pr.bin> <project-directory> --raw-only
   rz-tool build <project-directory> <output.cpk|lt.bin|pr.bin>
-  rz-tool build <sc-project> <output.cpk> [--charset-map <charset.json>]
-  rz-tool build <sc-project> <output.cpk> --eboot-in <eboot.bin.elf> --eboot-out <patched.bin.elf> [--charset-map <charset.json>]
+  rz-tool build <sc-project> <output.cpk> [--charset-map <charset.json>] [--wrap-width-table <font.cnf|json>] [--wrap-width-px <px>] [--wrap-mode <word|legacy>] [--wrap-rows <n>]
+  rz-tool build <sc-project> <output.cpk> --eboot-in <vwf-patched-eboot.bin.elf> --eboot-out <patched.bin.elf> [--charset-map <font.tbl|charset.json>] [--wrap-width-table <font.cnf|json>] [--wrap-width-px <px>] [--wrap-mode <word|legacy>] [--wrap-rows <n>]
 
 Editable mode understands the engine image-package grammar used by
 addpt/bk/bsf/pt, compiled scene-script payloads in sc.cpk, and the lt.bin 4-bpp
 glyph bank. For sc.cpk, scenario-dialogue.json is the sole user-editable text
-document; it contains primary dialogue pages plus proven secondary-target and
-FF42/FF8C inline strings. scenario-routing.json is the read-only route report.
-Rebuild state is stored as one compressed .rz-internal/sc-state.json.gz bundle.
+document; dialogue markers are the user-visible dialogues and each marker uses
+one complete editable `text` field. Wrapping is performed silently during build.
+`--wrap-width-table` takes the same patcher font.cnf width config (or compiled
+JSON) used for the VWF ELF width table. When `--charset-map` or
+`--wrap-width-table` is used together with `--eboot-in/--eboot-out`, the
+input ELF must already be patched by the standalone VWF patcher and must match
+the known VWF runtime SHA-256 over VA range 0x81000000..0x81100000; rz-tool only
+patches the SC allocation/metadata tables and runtime buffer size.
+`--wrap-width-px`
+overrides the default 528px physical row limit; when omitted, rz-tool uses
+528px per row. A runtime dialogue screen holds three physical rows by default
+(`--wrap-rows 3`). Word mode wraps before the next word would exceed the row
+limit, groups rows into three-row screens, and emits continuation dialogue
+markers for overflow screens. This avoids the engine overwrite mode observed
+when extra rows were encoded as additional FFFE pages under the same marker.
+Pass `--wrap-mode legacy` to use the old glyph-by-glyph breaker with the same
+three-row screen grouping. The 528px row value is derived from runtime
+calibration: 528px was observed safe, while 550px clipped the final 0> marker.
+Routing and row-joiner/continuation metadata are stored inside
+.rz-internal/sc-build-state.json.gz. Rebuild state is stored in that same
+compressed bundle; normal extraction does not emit scenario-routing.json or
+scenario-dialogue.meta.json.
+When SC wrapping generates continuation markers or trims semantic row-boundary
+spaces, build also writes `<output>.rz-dialogue-meta.json` beside the rebuilt
+archive. Keep that companion with the SC file. A later extract automatically
+loads it, verifies its archive SHA-256 and generated `FFFB FF68` marker chain,
+then folds continuation markers back into one editable text field. The companion
+contains only marker relationships and row joiners; it contains no dialogue,
+speaker, row, width-profile, pixel-metric, or debug data.
+Known stock sc.cpk hashes use builtin charset/allocation and export metadata.
+Unknown or modified sc.cpk must be extracted with --charset-map and --allocation-map,
+unless explicit --use-stock-charset/--use-stock-allocation overrides are supplied.
 Pass --debug-script-ir only when human-readable per-entry IR/state copies are
 needed under debug/scenario-ir.
 Extracted image CPK assets are written into one flat project directory with

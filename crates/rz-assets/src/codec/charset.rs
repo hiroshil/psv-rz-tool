@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AssetError;
 
-pub const GLYPH_COUNT: usize = 0x0e12;
-const GLYPH_CODEPOINTS: [u32; GLYPH_COUNT] = [
+pub const STOCK_GLYPH_COUNT: usize = 0x0e12;
+pub const GLYPH_COUNT: usize = STOCK_GLYPH_COUNT;
+const GLYPH_CODEPOINTS: [u32; STOCK_GLYPH_COUNT] = [
     0x003000, 0x003001, 0x003002, 0x00FF0C, 0x00FF0E, 0x0030FB, 0x00FF1A, 0x00FF1B,
     0x00FF1F, 0x00FF01, 0x00309B, 0x00309C, 0x0000B4, 0x00FF40, 0x0000A8, 0x00FF3E,
     0x00FFE3, 0x00FF3F, 0x0030FD, 0x0030FE, 0x00309D, 0x00309E, 0x003003, 0x004EDD,
@@ -485,6 +486,10 @@ impl CharsetMap {
         &self.id
     }
 
+    pub fn glyph_count(&self) -> usize {
+        self.codepoints.len()
+    }
+
     pub fn decode_glyph(&self, id: u16) -> Result<char, AssetError> {
         let codepoint = *self.codepoints.get(usize::from(id)).ok_or_else(|| {
             AssetError::InvalidFormat(format!(
@@ -516,13 +521,13 @@ impl CharsetMap {
     }
 
     fn from_codepoints(id: String, codepoints: Vec<u32>) -> Result<Self, AssetError> {
-        if codepoints.len() != GLYPH_COUNT {
+        if codepoints.len() < STOCK_GLYPH_COUNT || codepoints.len() > usize::from(u16::MAX) + 1 {
             return Err(AssetError::InvalidProject(format!(
-                "charset contains {} glyphs, expected {GLYPH_COUNT}",
+                "charset contains {} glyphs, expected {STOCK_GLYPH_COUNT}..=65536",
                 codepoints.len()
             )));
         }
-        let mut reverse = HashMap::with_capacity(GLYPH_COUNT);
+        let mut reverse = HashMap::with_capacity(codepoints.len());
         for (index, codepoint) in codepoints.iter().copied().enumerate() {
             let character = char::from_u32(codepoint).ok_or_else(|| {
                 AssetError::InvalidProject(format!(
@@ -553,6 +558,108 @@ pub fn default_map() -> &'static CharsetMap {
     })
 }
 
+
+pub fn load_map(path: &Path) -> Result<CharsetMap, AssetError> {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if extension == "tbl" {
+        load_tbl(path)
+    } else {
+        load_document(path)
+    }
+}
+
+fn trim_ascii_syntax_padding(value: &str) -> &str {
+    value.trim_matches(|ch| ch == ' ' || ch == '\t' || ch == '\r')
+}
+
+fn strip_ascii_line_ending(value: &str) -> &str {
+    value.strip_suffix('\r').unwrap_or(value)
+}
+
+fn parse_tbl_mapping_value(line_index: usize, right: &str) -> Result<u32, AssetError> {
+    // The right-hand side is glyph data.  Do not trim it before deciding what it
+    // means: both `0000=U+3000` and expanded-table `0E12=U+0020` are
+    // valid one-character mappings.  Only U+XXXX syntax may use ASCII padding.
+    let raw_value = strip_ascii_line_ending(right);
+    let u_syntax = trim_ascii_syntax_padding(raw_value);
+    if let Some(hex) = u_syntax.strip_prefix("U+").or_else(|| u_syntax.strip_prefix("u+")) {
+        return u32::from_str_radix(hex.trim_matches(|ch| ch == ' ' || ch == '\t'), 16).map_err(|_| {
+            AssetError::InvalidProject(format!(
+                "font.tbl line {} has invalid codepoint {:?}",
+                line_index + 1,
+                raw_value
+            ))
+        });
+    }
+
+    let mut chars = raw_value.chars();
+    let Some(character) = chars.next() else {
+        return Err(AssetError::InvalidProject(format!(
+            "font.tbl line {} has empty mapping",
+            line_index + 1
+        )));
+    };
+    if chars.next().is_some() {
+        return Err(AssetError::InvalidProject(format!(
+            "font.tbl line {} maps one glyph to multiple Unicode scalars",
+            line_index + 1
+        )));
+    }
+    Ok(character as u32)
+}
+
+fn load_tbl(path: &Path) -> Result<CharsetMap, AssetError> {
+    let mut codepoints = default_map().codepoints.clone();
+    for (line_index, raw_line) in fs::read_to_string(path)?.lines().enumerate() {
+        // Do not trim the whole line: mapping values may be whitespace.  Use a
+        // left-trimmed view only for blank/comment detection and glyph-ID syntax.
+        let line = strip_ascii_line_ending(raw_line);
+        let line_for_syntax = line.trim_start_matches(|ch| ch == ' ' || ch == '\t');
+        if line_for_syntax.is_empty() || line_for_syntax.starts_with('#') {
+            continue;
+        }
+        let Some((left, right)) = line_for_syntax.split_once('=') else {
+            return Err(AssetError::InvalidProject(format!(
+                "font.tbl line {} is missing '='",
+                line_index + 1
+            )));
+        };
+        let glyph_id = usize::from_str_radix(left.trim().trim_start_matches("0x").trim_start_matches("0X"), 16)
+            .map_err(|_| AssetError::InvalidProject(format!(
+                "font.tbl line {} has invalid glyph ID {:?}",
+                line_index + 1,
+                left.trim()
+            )))?;
+        let codepoint = parse_tbl_mapping_value(line_index, right)?;
+        if glyph_id >= codepoints.len() {
+            codepoints.resize(glyph_id + 1, 0xfffd);
+        }
+        codepoints[glyph_id] = codepoint;
+    }
+    CharsetMap::from_codepoints(
+        format!("font-tbl:{}", path.file_name().and_then(|name| name.to_str()).unwrap_or("font.tbl")),
+        codepoints,
+    )
+}
+
+pub fn write_document(map: &CharsetMap, path: &Path) -> Result<(), AssetError> {
+    let document = CharsetDocument {
+        document_version: 1,
+        charset_id: map.id.clone(),
+        glyph_count: map.codepoints.len() as u32,
+        codepoints: map.codepoints
+            .iter()
+            .map(|codepoint| format!("U+{codepoint:04X}"))
+            .collect(),
+    };
+    fs::write(path, serde_json::to_vec_pretty(&document)?)?;
+    Ok(())
+}
+
 pub fn load_document(path: &Path) -> Result<CharsetMap, AssetError> {
     let document: CharsetDocument = serde_json::from_slice(&fs::read(path)?)?;
     if document.document_version != 1 {
@@ -561,16 +668,18 @@ pub fn load_document(path: &Path) -> Result<CharsetMap, AssetError> {
             document.document_version
         )));
     }
-    if usize::try_from(document.glyph_count).unwrap_or(usize::MAX) != GLYPH_COUNT
-        || document.codepoints.len() != GLYPH_COUNT
+    let declared = usize::try_from(document.glyph_count).unwrap_or(usize::MAX);
+    if declared != document.codepoints.len()
+        || declared < STOCK_GLYPH_COUNT
+        || declared > usize::from(u16::MAX) + 1
     {
         return Err(AssetError::InvalidProject(format!(
-            "charset declares {} glyphs and contains {}, expected {GLYPH_COUNT}",
+            "charset declares {} glyphs and contains {}, expected matching count in {STOCK_GLYPH_COUNT}..=65536",
             document.glyph_count,
             document.codepoints.len()
         )));
     }
-    let mut codepoints = Vec::with_capacity(GLYPH_COUNT);
+    let mut codepoints = Vec::with_capacity(declared);
     for (index, value) in document.codepoints.iter().enumerate() {
         let raw = value.strip_prefix("U+").or_else(|| value.strip_prefix("u+")).ok_or_else(|| {
             AssetError::InvalidProject(format!(

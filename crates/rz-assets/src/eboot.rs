@@ -8,6 +8,12 @@ pub const SC_ENTRY_COUNT: usize = 89;
 const SC_SECTOR_TABLE_VA: u32 = 0x8111_344c;
 const SC_METADATA_TABLE_VA: u32 = 0x810f_9b1c;
 const SC_BUFFER_MOV_VA: u32 = 0x8101_b554;
+const VWF_RUNTIME_HASH_RANGE_START_VA: u32 = 0x8100_0000;
+const VWF_RUNTIME_HASH_RANGE_END_VA: u32 = 0x8110_0000;
+const VWF_RUNTIME_HASH_RANGE_SIZE: usize =
+    (VWF_RUNTIME_HASH_RANGE_END_VA - VWF_RUNTIME_HASH_RANGE_START_VA) as usize;
+const VWF_RUNTIME_HASH_RANGE_SHA256: &str =
+    "8eac77d2ff46522e7c428bc8231b88b8606a5dc4f2608765955266cf06666ac9";
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ScEntryPatch {
@@ -48,10 +54,99 @@ impl ScPatchPlan {
     }
 }
 
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ScAllocationMapDocument {
+    pub format: String,
+    pub version: u32,
+    pub source_eboot_sha256: String,
+    pub entries: Vec<ScAllocationEntry>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ScAllocationEntry {
+    pub entry_id: u32,
+    pub start_sector: u16,
+    pub sector_count: u16,
+    pub allocation_size: usize,
+    pub allocation_size_hex: String,
+    pub stock_sector_count: u16,
+    pub stock_allocation_size: usize,
+    pub stream_base: u16,
+    pub stream_count: u16,
+    pub primary_base: u16,
+    pub primary_count: u16,
+    pub secondary_base: u16,
+    pub secondary_count: u16,
+    pub patched: bool,
+}
+
+pub fn extract_sc_allocation_map(input: &Path) -> Result<ScAllocationMapDocument, AssetError> {
+    let bytes = fs::read(input)?;
+    let elf = Elf32View::parse(&bytes)?;
+    let sector_offset = elf.virtual_to_file_offset(SC_SECTOR_TABLE_VA, SC_ENTRY_COUNT * 4)?;
+    let metadata_offset = elf.virtual_to_file_offset(SC_METADATA_TABLE_VA, SC_ENTRY_COUNT * 12)?;
+    validate_existing_sector_table(&bytes[sector_offset..sector_offset + SC_ENTRY_COUNT * 4])?;
+    validate_existing_metadata_table(&bytes[metadata_offset..metadata_offset + SC_ENTRY_COUNT * 12])?;
+    let mut entries = Vec::with_capacity(SC_ENTRY_COUNT);
+    for index in 0..SC_ENTRY_COUNT {
+        let base = sector_offset + index * 4;
+        let start_sector = u16::from_le_bytes([bytes[base], bytes[base + 1]]);
+        let sector_count = u16::from_le_bytes([bytes[base + 2], bytes[base + 3]]);
+        let allocation_size = usize::from(sector_count) * SECTOR_SIZE;
+        let stock_sector_count = SC_SECTORS[index];
+        let stock_allocation_size = usize::from(stock_sector_count) * SECTOR_SIZE;
+        let metadata_base = metadata_offset + index * 12;
+        let stream_base = read_u16(&bytes, metadata_base)?;
+        let stream_count = read_u16(&bytes, metadata_base + 2)?;
+        let primary_base = read_u16(&bytes, metadata_base + 4)?;
+        let primary_count = read_u16(&bytes, metadata_base + 6)?;
+        let secondary_base = read_u16(&bytes, metadata_base + 8)?;
+        let secondary_count = read_u16(&bytes, metadata_base + 10)?;
+        let stock_metadata = SC_METADATA[index];
+        entries.push(ScAllocationEntry {
+            entry_id: index as u32,
+            start_sector,
+            sector_count,
+            allocation_size,
+            allocation_size_hex: format!("{allocation_size:#x}"),
+            stock_sector_count,
+            stock_allocation_size,
+            stream_base,
+            stream_count,
+            primary_base,
+            primary_count,
+            secondary_base,
+            secondary_count,
+            patched: sector_count != stock_sector_count
+                || stream_base != stock_metadata.stream_base
+                || stream_count != stock_metadata.stream_count
+                || primary_base != stock_metadata.primary_base
+                || primary_count != stock_metadata.primary_count
+                || secondary_base != stock_metadata.secondary_base
+                || secondary_count != stock_metadata.secondary_count,
+        });
+    }
+    Ok(ScAllocationMapDocument {
+        format: "rz-sc-allocation-map".to_owned(),
+        version: 1,
+        source_eboot_sha256: sha256_hex(&bytes),
+        entries,
+    })
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}
+
 pub fn patch_sc_elf(
     input: &Path,
     output: &Path,
     plan: &ScPatchPlan,
+    require_vwf_runtime: bool,
 ) -> Result<EbootPatchReport, AssetError> {
     let mut bytes = fs::read(input)?;
     let elf = Elf32View::parse(&bytes)?;
@@ -66,6 +161,9 @@ pub fn patch_sc_elf(
             "eboot instruction at {SC_BUFFER_MOV_VA:#010x} is not a supported `movs.w r0, #power_of_two` signature"
         ))
     })?;
+    if require_vwf_runtime {
+        validate_vwf_runtime_patch(&elf, &bytes)?;
+    }
 
     let mut start_sector = 0u32;
     for (index, entry) in plan.entries.iter().enumerate() {
@@ -142,6 +240,25 @@ pub fn patch_sc_elf(
 
 fn write_u16(bytes: &mut [u8], offset: usize, value: u16) {
     bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+}
+
+fn validate_vwf_runtime_patch(elf: &Elf32View, bytes: &[u8]) -> Result<(), AssetError> {
+    let range_offset = elf.virtual_to_file_offset(
+        VWF_RUNTIME_HASH_RANGE_START_VA,
+        VWF_RUNTIME_HASH_RANGE_SIZE,
+    )?;
+    let range = &bytes[range_offset..range_offset + VWF_RUNTIME_HASH_RANGE_SIZE];
+    let actual = sha256_hex(range);
+    if actual != VWF_RUNTIME_HASH_RANGE_SHA256 {
+        return Err(AssetError::InvalidProject(format!(
+            "--eboot-in VWF runtime hash mismatch for virtual range {:#010x}..{:#010x}: expected {}, got {}; run the standalone VWF patcher first, then pass that patched eboot to rz-tool for SC allocation patching",
+            VWF_RUNTIME_HASH_RANGE_START_VA,
+            VWF_RUNTIME_HASH_RANGE_END_VA,
+            VWF_RUNTIME_HASH_RANGE_SHA256,
+            actual
+        )));
+    }
+    Ok(())
 }
 
 fn validate_existing_sector_table(bytes: &[u8]) -> Result<(), AssetError> {
@@ -352,5 +469,16 @@ mod tests {
     fn buffer_rounding_has_stock_floor() {
         assert_eq!(next_power_of_two_at_least(1, 0x20000).unwrap(), 0x20000);
         assert_eq!(next_power_of_two_at_least(0x20001, 0x20000).unwrap(), 0x40000);
+    }
+
+    #[test]
+    fn vwf_runtime_range_hash_constant_matches_patcher_output() {
+        assert_eq!(VWF_RUNTIME_HASH_RANGE_START_VA, 0x8100_0000);
+        assert_eq!(VWF_RUNTIME_HASH_RANGE_END_VA, 0x8110_0000);
+        assert_eq!(VWF_RUNTIME_HASH_RANGE_SIZE, 0x0010_0000);
+        assert_eq!(
+            VWF_RUNTIME_HASH_RANGE_SHA256,
+            "8eac77d2ff46522e7c428bc8231b88b8606a5dc4f2608765955266cf06666ac9"
+        );
     }
 }

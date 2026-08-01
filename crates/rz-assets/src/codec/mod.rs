@@ -28,31 +28,65 @@ pub struct DecodeContext<'a> {
     pub id: Option<u32>,
 }
 
+pub struct EditableDecodeOptions<'a> {
+    pub allocation_size: Option<usize>,
+    pub charset_map: Option<&'a charset::CharsetMap>,
+    pub engine_metadata: Option<engine_allocations::ScMetadata>,
+}
+
+impl<'a> Default for EditableDecodeOptions<'a> {
+    fn default() -> Self {
+        Self { allocation_size: None, charset_map: None, engine_metadata: None }
+    }
+}
+
 pub fn decode_editable(
     input: &[u8],
     context: &DecodeContext<'_>,
     asset_directory: &Path,
     output_stem: &str,
 ) -> Result<AssetKind, AssetError> {
+    decode_editable_with_options(
+        input,
+        context,
+        asset_directory,
+        output_stem,
+        EditableDecodeOptions::default(),
+    )
+}
+
+pub fn decode_editable_with_options(
+    input: &[u8],
+    context: &DecodeContext<'_>,
+    asset_directory: &Path,
+    output_stem: &str,
+    options: EditableDecodeOptions<'_>,
+) -> Result<AssetKind, AssetError> {
     ensure_in_scope(context, input)?;
     let archive = context.archive_name.to_ascii_lowercase();
     let entry_id = context.id.unwrap_or(context.order);
-    let allocation_size = engine_allocations::allocation_size(&archive, entry_id).ok_or_else(|| {
-        AssetError::UnsupportedAsset {
-            entry: display_entry(context),
-            reason: format!(
-                "entry ID {entry_id} is absent from the executable-resident sector table"
-            ),
-        }
-    })?;
+    let allocation_size = match options.allocation_size {
+        Some(value) => value,
+        None => engine_allocations::allocation_size(&archive, entry_id).ok_or_else(|| {
+            AssetError::UnsupportedAsset {
+                entry: display_entry(context),
+                reason: format!(
+                    "entry ID {entry_id} is absent from the executable-resident sector table"
+                ),
+            }
+        })?,
+    };
 
     if archive == "sc.cpk" {
-        return script::decode(
+        let charset_map = options.charset_map.unwrap_or_else(|| charset::default_map());
+        return script::decode_with_charset_and_metadata(
             input,
             asset_directory,
             output_stem,
             entry_id,
             allocation_size,
+            charset_map,
+            options.engine_metadata,
         );
     }
 

@@ -27,13 +27,13 @@ jobs:
           - name: linux-x86_64-musl
             os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            archive: rz-tool-linux-x86_64-musl.tar.gz
+            bin: rz-tool
 
           # Native Windows x86_64 binary.
           - name: windows-x86_64-msvc
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            archive: rz-tool-windows-x86_64-msvc.zip
+            bin: rz-tool.exe
 
     steps:
       - name: Checkout
@@ -51,27 +51,27 @@ jobs:
       - name: Build release binary
         run: cargo build --release --package rz-tool --target ${{ matrix.target }}
 
-      - name: Package Linux binary
+      - name: Preparing Linux binary
         if: runner.os == 'Linux'
         run: |
-          mkdir -p dist/pkg
-          cp target/${{ matrix.target }}/release/rz-tool dist/pkg/rz-tool
-          cp LICENSE dist/pkg/LICENSE
-          chmod +x dist/pkg/rz-tool
-          tar -C dist/pkg -czf dist/${{ matrix.archive }} rz-tool LICENSE
+          mkdir -p dist/
+          cp target/${{ matrix.target }}/release/rz-tool dist/${{ matrix.bin }}
+          cp LICENSE dist/LICENSE
+          chmod +x dist/${{ matrix.bin }}
 
-      - name: Package Windows binary
+      - name: Preparing Windows binary
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist/pkg | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/rz-tool.exe" "dist/pkg/rz-tool.exe"
-          Copy-Item "LICENSE" "dist/pkg/LICENSE"
-          Compress-Archive -Path "dist/pkg/*" -DestinationPath "dist/${{ matrix.archive }}" -Force
+          New-Item -ItemType Directory -Force dist/ | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/rz-tool.exe" "dist/${{ matrix.bin }}"
+          Copy-Item "LICENSE" "dist/LICENSE"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
-          path: dist/${{ matrix.archive }}
+          path: |
+            dist/${{ matrix.bin }}
+            dist/LICENSE
           if-no-files-found: error

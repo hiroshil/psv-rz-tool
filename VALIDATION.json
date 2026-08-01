@@ -6,9 +6,11 @@
     "script_meta_version": 1,
     "script_internal_ir_version": 1,
     "scenario_dialogue_version": 1,
-    "scenario_routing_version": 2,
-    "scenario_state_bundle_version": 2,
-    "glyphs": 3602
+    "scenario_routing_version": 1,
+    "scenario_state_bundle_version": 1,
+    "glyphs": 3602,
+    "scenario_state_bundle_path": ".rz-internal/sc-build-state.json.gz",
+    "font_width_config": "examples/font.cnf"
   },
   "script_corpus": {
     "entries": 89,
@@ -67,6 +69,79 @@
     "fixed_diff_offsets": [
       "0x0",
       "0xfd7f0"
-    ]
+    ],
+    "expanded_vwf_supported": true,
+    "expanded_profile": {
+      "glyph_count": 3904,
+      "file_size": 1126400,
+      "layout": "align_up(glyph_count * 0x120 + tail, 0x800)"
+    }
+  },
+  "vwf_eboot_input_contract": {
+    "stock_eboot_with_vwf_wrap_must_reject": true,
+    "standalone_vwf_patcher_output_required_for_charset_or_wrap": true,
+    "rz_tool_eboot_patch_scope": [
+      "sc_allocation_table",
+      "sc_metadata_table",
+      "sc_runtime_buffer_size"
+    ],
+    "runtime_hash_range_va": "0x81000000..0x81100000",
+    "runtime_hash_range_sha256": "8eac77d2ff46522e7c428bc8231b88b8606a5dc4f2608765955266cf06666ac9"
+  },
+  "wrap_materialization": {
+    "default_row_width_px": 528,
+    "default_wrap_rows": 3,
+    "wrap_rows_required_on_cli": false,
+    "debug_output_included": false,
+    "removed_flags": [
+      "--debug-wrap-lines",
+      "--wrap-page-reserve-px"
+    ],
+    "serialization_contract": "wrap text to physical rows, group rows into three-row runtime message entries, emit continuation FFF0 markers for overflow screens",
+    "engine_overwrite_guard": "do not encode fourth/fifth FFFE pages under one marker; runtime overwrites row slots in that layout"
+  },
+  "row_joiner_metadata": {
+    "project_metadata_location": ".rz-internal/sc-build-state.json.gz dialogue_metadata",
+    "portable_companion": "<output>.rz-dialogue-meta.json",
+    "allowed_fields": [
+      "document_version",
+      "archive",
+      "entries",
+      "entry_id",
+      "dialogues",
+      "marker_index",
+      "row_joiners",
+      "generated_marker_count"
+    ],
+    "forbidden_content": [
+      "full dialogue text",
+      "physical row text",
+      "speaker text",
+      "wrap_width_px",
+      "rows_per_screen",
+      "pixel widths",
+      "raw SC dump",
+      "debug lines"
+    ],
+    "word_joiners": {
+      "word_boundary": "single ASCII space",
+      "forced_overwide_word_split": "empty string"
+    }
+  },
+  "portable_dialogue_metadata": {
+    "portable_companion": "<output>.rz-dialogue-meta.json",
+    "portable_identity": "archive_sha256",
+    "auto_extract": true,
+    "fold_validation": [
+      "archive SHA-256 matches",
+      "physical marker chain is contiguous",
+      "each generated marker is adjacent",
+      "each generated marker has FFFB FF68 self invocation",
+      "speaker is stable across the generated chain",
+      "row_joiner count matches combined physical row boundaries"
+    ],
+    "missing_companion_behavior": "do not infer continuation relationships",
+    "mismatched_companion_behavior": "reject extraction",
+    "edited_folded_without_wrap_profile": "reject build to prevent stale continuation metadata"
   }
 }

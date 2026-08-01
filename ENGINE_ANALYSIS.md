@@ -585,7 +585,7 @@ The project contract consequently keeps three independent values:
 - `entry_id`: engine-visible ITOC ID used unchanged by the VM and loader;
 - `order`: CPK iteration/emission order retained for archive reconstruction;
 - presentation position: the array position used by `scenario-dialogue.json`
-  and the navigation rank recorded by `scenario-routing.json`.
+  and the navigation rank embedded in `.rz-internal/sc-build-state.json.gz`.
 
 No user-facing script filenames are required for normal extraction.
 `scenario-dialogue.json` is the authoritative editing document and lists entry
@@ -593,22 +593,23 @@ No user-facing script filenames are required for normal extraction.
 internal dialogue by `(entry_id, marker_index)`, then sorts CPK output by the
 preserved archive `order`.
 
-`scenario-routing.json` records the proven root, the order/ID mapping and every
-`FFEF` word triple whose target entry and stream are valid. Presentation order is
-dependency-aware rather than depth-first. Every observed source is emitted
-before its target, and a shared convergence target is delayed until all observed
-predecessors have been emitted. Ties use first discovery and source opcode
-occurrence order. Disconnected components are appended by engine-ID root order.
-This produces a deterministic topological presentation while preserving the
+The routing document embedded in `.rz-internal/sc-build-state.json.gz` records
+the proven root, the order/ID mapping and every `FFEF` word triple whose target
+entry and stream are valid. Presentation order is dependency-aware rather than
+depth-first. Every observed source is emitted before its target, and a shared
+convergence target is delayed until all observed predecessors have been emitted.
+Ties use first discovery and source opcode occurrence order. Disconnected
+components are appended by engine-ID root order. This produces a deterministic
+topological presentation while preserving the
 fact that the candidate graph is incomplete and does not define one universal
 playthrough chronology.
 
 The physical node order, relocation labels, raw VM words and engine metadata
-are machine-managed rebuild state in `.rz-internal/sc-state.json.gz`. Dialogue
+are machine-managed rebuild state in `.rz-internal/sc-build-state.json.gz`. Dialogue
 Unicode and complete dialogue glyph vectors are not stored there;
 `scenario-dialogue.json` is the sole text source. The state bundle stores only
 sparse glyph-alias deltas for source IDs that differ from canonical
-`charset.json` encoding, plus structural data that cannot be derived from text.
+the selected charset-map encoding, plus structural data that cannot be derived from text.
 Human-readable per-entry copies are emitted only with `--debug-script-ir`, under
 `debug/scenario-ir/`; build does not consume those copies.
 
@@ -733,19 +734,19 @@ and `FF8C`) and byte-exact reassembly are the authoritative runtime grammar
 checks. A numerical scan for additional glyph-range candidates remains in the
 offline corpus validator as a review aid, but it does not reject extraction.
 
-`.rz-internal/sc-state.json.gz` is the single machine-managed bundle required to
+`.rz-internal/sc-build-state.json.gz` is the single machine-managed bundle required to
 rebuild. It retains:
 
 - stream labels and physical node order;
 - sparse glyph-alias deltas only where a source ID differs from canonical
-  `charset.json` encoding;
+  the selected charset-map encoding;
 - exact raw `u16` command/data nodes;
 - typed text-node prefix/suffix words;
 - symbolic labels for engine-consumed payload addresses;
 - secondary relocation records, allocation data and the extracted integrity footer.
 
 It does not retain Unicode dialogue strings or complete source glyph vectors.
-Those are reconstructed from `scenario-dialogue.json` and `charset.json` during
+Those are reconstructed from `scenario-dialogue.json` and the selected charset map during
 build.
 
 For the supplied corpus, the user document contains 599,524 text glyphs. Only
@@ -1127,3 +1128,364 @@ former value and the common reader rejected the entry before GZIP processing.
 The corrected image encoder writes the footer only after output is padded to
 the exact executable allocation. This also prevents a future package relocation
 or recompression path from calculating the checksum over an intermediate size.
+
+---
+
+## Appendix A. Integrated LT rebuild integrity audit
+
+## Result
+
+The previous conclusion that `lt.bin` bytes `0xFD440..0xFD7FF` were entirely
+renderer-ignored tail data was incomplete. The glyph renderer does stop at
+`0xFD43F`, but the standalone resource loader validates the complete
+`0xFD800`-byte allocation before the font is accepted.
+
+The final 16 bytes are the same two-lane integrity footer used by fixed-sector
+CPK entries. Preserving that footer after changing `lt-atlas.png` makes the
+startup loader reject `lt.bin`, which appears as a hang.
+
+## Executable evidence
+
+The standalone table record at `0x81129E58` is:
+
+```text
+resource_id = 7
+byte_size   = 0x000FD800
+sectors     = 0x000001FB
+runtime_dst = assigned from DAT_811B98E4
+```
+
+The startup state machine begins at `0x8101A9DE`. It installs the allocated LT
+buffer into the record, starts the asynchronous read, and then invokes the
+common verifier after I/O completion:
+
+```text
+8101aa70  movw  r0, #0x98e4
+8101aa74  movt  r0, #0x811b
+8101aa78  ldr   r0, [r0]
+8101aa7a  movw  r1, #0x9e58
+8101aa82  movt  r1, #0x8112
+8101aa86  str   r0, [r1, #0xc]      ; record.destination = DAT_811B98E4
+
+8101abdc  movw  r1, #0x9e58
+8101abe0  movt  r1, #0x8112
+8101abe6  ldr   r2, [r0, r1]        ; resource ID
+8101abea  ldr   r3, [r0, #8]        ; sector count
+8101abf0  ldr   r4, [r0, #0xc]      ; destination
+8101abf6  ldr   r5, [r1, #0x20]     ; async read entry point
+8101ac00  blx   r5
+
+8101ac54  movw  r1, #0x9e58
+8101ac58  movt  r1, #0x8112
+8101ac60  ldr   r3, [r0, #4]        ; exact byte size
+8101ac66  ldr   r0, [r0, #0xc]      ; destination
+8101ac6c  ldr   r2, [r2, #0x30]     ; pointer at 0x8110C328
+8101ac70  blx   r2
+```
+
+The executable value at `0x8110C328` is `0x8102B4AD`, selecting Thumb routine
+`FUN_8102B4AC`.
+
+## Integrity algorithm
+
+`FUN_8102B4AC` treats the final 16 bytes as two stored little-endian `u64`
+values. It computes two wrapping sums over every preceding 16-byte block:
+
+```text
+lane0 = 0x1111111111111111
+lane1 = 0x1111111111111111
+
+for each 16-byte block:
+    lane0 += le_u64(block[0:8])
+    lane1 += le_u64(block[8:16])
+
+footer = le_u64(lane0) || le_u64(lane1)
+```
+
+## `lt.bin.org` layout
+
+```text
+0x000000..0x0FD43F  3,602 glyphs × 0x120 bytes
+0x0FD440..0x0FD7EF  0x3B0 zero/preserved tail bytes
+0x0FD7F0..0x0FD7FF  0x10 integrity footer
+```
+
+Stored footer:
+
+```text
+71f70d807e60ce6c9129df8e1a01f723
+```
+
+The algorithm above reproduces it exactly.
+
+## Reproduction of the old bug
+
+The stock tool extracted the atlas and rebuilt the unedited project
+byte-for-byte. A test then changed atlas pixel `(0,0)` from alpha `0` to `255`.
+The encoded glyph bank changed only byte `0x000000` from `00` to `0F`.
+
+Old builder result:
+
+```text
+changed glyph byte:  0x000000: 00 -> 0F
+stored footer:       71f70d807e60ce6c9129df8e1a01f723
+required footer:     80f70d807e60ce6c9129df8e1a01f723
+integrity result:    FAIL
+```
+
+After footer regeneration, the fixed file differs from stock at only two byte
+positions: the edited glyph byte and footer byte `0x0FD7F0`.
+
+## Source correction
+
+`codec/lt_font.rs` now:
+
+1. verifies the source footer before extraction;
+2. retains project-schema compatibility with the existing `tail_hex` field;
+3. uses only the first `0x3B0` tail bytes from that field;
+4. never copies the extracted final 16 bytes;
+5. encodes all glyph data;
+6. pads to exactly `0xFD800` bytes;
+7. regenerates the common integrity footer;
+8. verifies the rebuilt footer before returning the output.
+
+The workspace and project versions remain `1.0.1` and schema `1`.
+
+## Repairing files built by the old encoder
+
+```bash
+python tools/lt_integrity.py broken-lt.bin fixed-lt.bin
+python tools/lt_integrity.py fixed-lt.bin --check
+```
+
+The repair changes only the final 16-byte footer and does not re-encode glyphs.
+
+## Validation
+
+```text
+stock size                                    0xFD800
+stock footer verification                    PASS
+no-edit old-tool rebuild byte-exact           PASS
+one-pixel old-tool rebuild footer             FAIL
+one-pixel footer-regenerated rebuild          PASS
+re-extracted edited pixel                     RGBA(255,255,255,255)
+static source validator                       PASS
+Capstone evidence regeneration                PASS
+workspace version                             1.0.1
+```
+
+A Rust toolchain was not present in the analysis environment, so `cargo check`,
+`cargo test`, and a new executable build remain release gates.
+
+---
+
+## Appendix B. Integrated texture rebuild integrity audit — bk.cpk entry 325
+
+## Scope
+
+Inputs used directly:
+
+- `bk.cpk.org` — 326-entry stock BK archive;
+- uploaded `rz-tool` executable;
+- `eboot.bin.elf`;
+- rz-tool 1.0.1 source state containing the prior SC integrity fix.
+
+The reproduced edit changes pixel `(512, 272)` in `00325-000.png` from
+`RGBA(255,255,255,255)` to `RGBA(0,255,255,255)`. This is a diagnostic edit,
+not a claim about the user's exact replacement artwork.
+
+## Reproduction
+
+Entry 325 has a fixed executable allocation of 546 sectors:
+
+```text
+546 * 0x800 = 0x111000 bytes
+```
+
+Its package model is:
+
+```text
+runtime surface        1024 x 544 RGBA8
+post-GZIP bytes         0x220000
+chunk stride            0x080000
+chunk count             5
+chunk table delta       0x1400
+entry allocation        0x111000
+```
+
+A no-edit rebuild reproduces entry 325 byte-for-byte. A one-pixel edit remains
+inside the same `0x111000` allocation, reparses, decompresses, and re-extracts
+to the edited image exactly. Therefore the failure is not caused by ITOC order,
+entry overlap, allocation growth, PNG dimensions, chunk destination stride, or
+GZIP decode failure.
+
+The old image encoder preserved the last 16 bytes of the original allocation:
+
+```text
+c61022978231856927f537a2f1992222
+```
+
+After the one-pixel edit, `FUN_8102B4AC` requires:
+
+```text
+53185a780ff7c24255f913de1533f7ef
+```
+
+The stale old-tool archive validates 325/326 entries; only entry 325 fails. The
+corrected archive validates 326/326 entries. Repairing it changes exactly the
+final 16 physical bytes of the CPK, at `0x11d877f0..0x11d877ff`.
+
+## Engine routine chain
+
+### BK loader
+
+`FUN_81053CDA` obtains the executable-resident sector count, then calls the
+shared reader with archive index 4 (`bk.cpk`):
+
+```text
+81053da0  adds  r1, r5, #0
+81053da2  bl    0x81021034
+81053da6  adds  r2, r0, #0
+81053da8  adds  r1, r6, #0
+81053dac  movs  r0, #4
+81053dae  bl    0x81053b7a
+81053db2  cmp   r0, #0
+81053db4  beq   load failure
+```
+
+### Common fixed-sector reader
+
+On completed I/O, `FUN_81053B7A` invokes the callback at
+`0x8110C2F8 + 0x30 = 0x8110C328` with `(buffer, sector_count << 11)`:
+
+```text
+81053c7c  ldr   r2, [r0, #0x30]
+81053c7e  lsls  r1, r6, #0xb
+81053c80  adds  r0, r7, #0
+81053c82  blx   r2
+81053c84  cmp   r0, #1
+```
+
+The ELF value at `0x8110C328` is `0x8102B4AD`, the Thumb entry for
+`FUN_8102B4AC`.
+
+### Integrity algorithm
+
+`FUN_8102B4AC` loads the final 16 bytes, excludes them from the iteration, and
+sums the preceding allocation as two independent little-endian `u64` lanes.
+Both lanes start at `0x1111111111111111`; arithmetic wraps modulo `2^64`.
+
+```text
+lane0 = 0x1111111111111111
+lane1 = 0x1111111111111111
+for each 16-byte block before the footer:
+    lane0 += le_u64(block[0:8])
+    lane1 += le_u64(block[8:16])
+footer = le_u64(lane0) || le_u64(lane1)
+```
+
+The callback returns zero on mismatch. BK loading then stops before
+`FUN_81053694` processes the image package, which presents as a hang or corrupt
+asset even though the package itself can be parsed offline.
+
+## Source correction
+
+The image-package encoder now:
+
+1. assembles/recompresses the package;
+2. rejects output exceeding the executable allocation;
+3. pads to the exact fixed allocation;
+4. recalculates the common 16-byte footer over all preceding bytes;
+5. writes the footer at allocation end;
+6. verifies the rebuilt allocation before returning it.
+
+Extraction also verifies the footer before parsing the image package. This is
+fail-closed: a stale edited entry is no longer silently treated as an opaque
+asset.
+
+The correction applies to all editable fixed-sector image profiles using the
+same reader: `addpt.cpk`, `bk.cpk`, `bsf.cpk`, and `pt.cpk`. Version remains
+`1.0.1`.
+
+`tools/cpk_integrity.py` repairs CPKs produced by older builds without
+repacking or changing ITOC metadata.
+
+## Validation results
+
+```text
+stock bk.cpk footer validation             326/326
+no-edit rebuilt bk.cpk footer validation   326/326
+old one-pixel rebuild                      325/326 (entry 325 stale)
+corrected one-pixel rebuild                326/326
+entry 325 no-edit byte equality            PASS
+corrected archive re-extraction            PASS
+re-extracted edited pixel                  RGBA(0,255,255,255)
+all other entry footers after repair       unchanged
+source static validator                    PASS
+Python fixer syntax/check mode              PASS
+```
+
+The environment has no `cargo`, `rustc`, or `rustfmt`; the Rust source could not
+be compiled here. The patch was checked through source-contract validation,
+Python compilation, clean patch application, binary corpus verification, and
+archive re-extraction.
+
+## SC row materialization and continuation contract
+
+Runtime testing showed that adjacent `FFFE`-terminated pages under one primary
+marker are row completions within the current dialogue screen, not independent
+screen clears. More than three physical rows under one marker can reuse the same
+three row slots and overwrite from the top. The stable materialization model
+therefore emits overflow text as additional `FFF0` message markers and clones the
+proven simple `FFFB FF68 <marker> <arg>` VM invocation for each generated
+continuation marker. Each generated marker owns at most three physical rows by
+default and carries the speaker through the normal `FFF0 speaker FFFF` header.
+
+Physical SC rows are rendered by the engine as glyph streams. Leading or trailing
+spaces at a row boundary are visible and can create poor layout, so build trims
+row-boundary whitespace from physical rows and records only the semantic joiner
+needed for logical fold-back. Project-local routing and row-joiner metadata are
+stored in `.rz-internal/sc-build-state.json.gz`; the portable companion
+`<output>.rz-dialogue-meta.json` is written beside a rebuilt archive only when it
+contains useful continuation or row-joiner relationships.
+
+The portable companion records only the logical root marker, generated marker
+count, row joiners and SHA-256 identity of the exact archive. It does not repeat
+text, speaker, rows, wrap width, glyph metrics or raw words. Extraction folds
+continuations back into one logical edit only when the archive hash matches, the
+physical marker chain is contiguous, every generated marker has the expected
+`FFFB FF68` self-invocation, the speaker is stable across the generated chain and
+row-joiner counts match the combined physical row boundaries.
+
+This split is deliberate:
+
+- `scenario-dialogue.json`: sole editable text and speaker content;
+- `.rz-internal/sc-build-state.json.gz`: physical machine state, routing,
+  relocation data and project-local dialogue metadata;
+- `<output>.rz-dialogue-meta.json`: portable archive identity plus the minimal
+  fold relationship needed by a later extraction.
+
+## VWF EBOOT input contract update
+
+Diagnostic A/B/C isolated two separate runtime classes: standalone VWF patcher
+output plus SC allocation patching is runtime-good, while letting `rz-tool` derive
+a deploy EBOOT from stock input in the VWF-wrap path can hang. The stable contract
+therefore treats VWF runtime installation as owned by the standalone VWF patcher.
+When `rz-tool build` is asked to patch an EBOOT for a build that uses a VWF charset
+or wrap-width table, the input ELF must already match the known-good standalone
+VWF-patcher SHA-256 for virtual range `0x81000000..0x81100000`:
+
+```text
+8eac77d2ff46522e7c428bc8231b88b8606a5dc4f2608765955266cf06666ac9
+```
+
+`rz-tool` then updates only SC sector allocation, SC metadata and script buffer
+sizing.
+
+## Compact font.cnf contract
+
+`font.cnf` is a compact width-policy config, not a dump of `font.tbl`. The
+canonical config uses `[default] advance=<px>` plus `[advance_groups]` entries
+where the key is a pixel advance and the value is the glyph group. The number-sign
+glyph can appear in a group value, so inline comment stripping must not treat `#`
+as a comment marker unless it is separated by whitespace.

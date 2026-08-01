@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
@@ -15,10 +15,13 @@ use crate::manifest::{AssetEntry, AssetKind};
 
 const DOCUMENT_VERSION: u32 = 1;
 const SOURCE_DOCUMENT_VERSION: u32 = 1;
-const ROUTING_DOCUMENT_VERSION: u32 = 2;
+const ROUTING_DOCUMENT_VERSION: u32 = 1;
 const DIALOGUE_DOCUMENT_VERSION: u32 = 1;
-const STATE_BUNDLE_VERSION: u32 = 2;
-const STATE_BUNDLE_PATH: &str = ".rz-internal/sc-state.json.gz";
+const STATE_BUNDLE_VERSION: u32 = 1;
+const STATE_BUNDLE_PATH: &str = ".rz-internal/sc-build-state.json.gz";
+const LEGACY_STATE_BUNDLE_PATH: &str = ".rz-internal/sc-state.json.gz";
+const LEGACY_DIALOGUE_METADATA_PATH: &str = "scenario-dialogue.meta.json";
+const PORTABLE_DIALOGUE_METADATA_SUFFIX: &str = ".rz-dialogue-meta.json";
 const VOICE_HEADER_SIZE: usize = 0x80;
 const RUNTIME_BASE: usize = 0x80;
 const SCRIPT_BASE: usize = 0x2000;
@@ -130,6 +133,43 @@ pub struct ScenarioDialogueDocument {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScenarioDialogueMetadataDocument {
+    pub document_version: u32,
+    pub archive: String,
+    /// Optional archive identity used only by the portable companion sidecar.
+    /// Internal build-state dialogue metadata omits it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<ScenarioDialogueMetadataEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScenarioDialogueMetadataEntry {
+    pub entry_id: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dialogues: Vec<ScenarioDialogueMetadataItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScenarioDialogueMetadataItem {
+    pub marker_index: u32,
+    /// Separator text removed from engine row boundaries for cleaner rendering.
+    /// This is metadata only: it does not duplicate full dialogue text, row text,
+    /// speaker text, wrap width, pixel metrics, or debug lines.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub row_joiners: Vec<String>,
+    /// Number of additional generated message markers produced by the build for
+    /// this root marker. This records structure, not text or build profile.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub generated_marker_count: u32,
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScenarioDialogueEntry {
     pub entry_id: u32,
     pub dialogues: Vec<ScenarioDialogueItem>,
@@ -141,7 +181,306 @@ pub struct ScenarioDialogueEntry {
 pub struct ScenarioDialogueItem {
     pub marker_index: u32,
     pub speaker: String,
-    pub pages: Vec<String>,
+    /// User-editable dialogue text. Engine line/page splitting is an internal
+    /// build detail and is never serialized in this document.
+    pub text: String,
+    #[serde(skip)]
+    engine_lines_override: Option<Vec<String>>,
+    #[serde(skip)]
+    engine_screens_override: Option<Vec<Vec<String>>>,
+    #[serde(skip)]
+    row_joiners_override: Option<Vec<String>>,
+    #[serde(skip)]
+    generated_marker_count_override: Option<u32>,
+}
+
+impl ScenarioDialogueItem {
+    pub fn engine_lines(&self) -> Vec<String> {
+        if let Some(lines) = self.engine_lines_override.as_ref() {
+            return lines.clone();
+        }
+        vec![normalize_user_text_for_build(&self.text)]
+    }
+
+    pub fn set_engine_lines_for_build(&mut self, lines: Vec<String>) {
+        self.engine_lines_override = Some(lines);
+        self.engine_screens_override = None;
+        self.row_joiners_override = None;
+        self.generated_marker_count_override = None;
+    }
+
+    pub fn engine_screens_for_build(&self) -> Vec<Vec<String>> {
+        if let Some(screens) = self.engine_screens_override.as_ref() {
+            return screens.clone();
+        }
+        vec![self.engine_lines()]
+    }
+
+    pub fn row_joiners_for_build(&self) -> Vec<String> {
+        self.row_joiners_override.clone().unwrap_or_default()
+    }
+
+    pub fn set_row_joiners_for_build(&mut self, row_joiners: Vec<String>) {
+        self.row_joiners_override = Some(row_joiners);
+    }
+
+    pub fn generated_marker_count_for_build(&self) -> u32 {
+        if let Some(screens) = self.engine_screens_override.as_ref() {
+            return screens.len().saturating_sub(1) as u32;
+        }
+        self.generated_marker_count_override.unwrap_or(0)
+    }
+
+    pub fn source_generated_marker_count(&self) -> u32 {
+        self.generated_marker_count_override.unwrap_or(0)
+    }
+
+    pub fn set_roundtrip_metadata_for_build(
+        &mut self,
+        row_joiners: Vec<String>,
+        generated_marker_count: u32,
+    ) {
+        self.row_joiners_override = Some(row_joiners);
+        self.generated_marker_count_override = Some(generated_marker_count);
+    }
+
+    pub fn set_engine_screens_for_build(&mut self, screens: Vec<Vec<String>>) {
+        self.engine_screens_override = Some(screens);
+        self.engine_lines_override = None;
+    }
+
+    pub fn set_engine_screens_for_build_with_joiners(
+        &mut self,
+        screens: Vec<Vec<String>>,
+        row_joiners: Vec<String>,
+    ) {
+        self.engine_screens_override = Some(screens);
+        self.engine_lines_override = None;
+        self.row_joiners_override = Some(row_joiners);
+    }
+}
+
+fn normalize_user_text_for_build(text: &str) -> String {
+    let mut out = String::new();
+    let mut pending_space = false;
+    for ch in text.chars() {
+        if ch == '\r' || ch == '\n' || ch == '\t' {
+            pending_space = true;
+            continue;
+        }
+        if pending_space && !out.is_empty() && ch != ' ' {
+            out.push(' ');
+        }
+        pending_space = false;
+        out.push(ch);
+    }
+    out.trim_matches(|ch| ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n').to_owned()
+}
+
+
+fn source_dialogue_matches_edit(
+    edit: &ScenarioDialogueItem,
+    speaker: &str,
+    pages: &[ScriptDialoguePage],
+) -> bool {
+    if edit.speaker.as_str() != speaker {
+        return false;
+    }
+    let joiners = edit.row_joiners_for_build();
+    let source_text = merge_engine_lines_to_user_text_with_joiners(
+        pages.iter().map(|page| page.text.as_str()),
+        &joiners,
+    );
+    normalize_user_text_for_build(&edit.text) == source_text
+}
+
+fn split_text_by_machine_page_counts(
+    text: &str,
+    page_char_counts: &[u32],
+    row_joiners: &[String],
+) -> Option<Vec<String>> {
+    if page_char_counts.is_empty() {
+        return None;
+    }
+    let characters = text.chars().collect::<Vec<_>>();
+    let mut position = 0usize;
+    let mut pages = Vec::with_capacity(page_char_counts.len());
+    for (row_index, count) in page_char_counts.iter().copied().enumerate() {
+        let count = usize::try_from(count).ok()?;
+        let end = position.checked_add(count)?;
+        if end > characters.len() {
+            return None;
+        }
+        pages.push(characters[position..end].iter().collect::<String>());
+        position = end;
+        if row_index + 1 < page_char_counts.len() {
+            let joiner = row_joiners.get(row_index).map(String::as_str).unwrap_or("");
+            let joiner_len = joiner.chars().count();
+            let joiner_end = position.checked_add(joiner_len)?;
+            if joiner_end > characters.len() {
+                return None;
+            }
+            let actual = characters[position..joiner_end]
+                .iter()
+                .collect::<String>();
+            if actual != joiner {
+                return None;
+            }
+            position = joiner_end;
+        }
+    }
+    (position == characters.len()).then_some(pages)
+}
+
+fn rebuild_machine_pages_from_texts(
+    page_texts: &[String],
+    page_glyph_aliases: &[Vec<ScriptGlyphAlias>],
+    charset_map: &charset::CharsetMap,
+) -> Result<Vec<ScriptDialoguePage>, AssetError> {
+    page_texts
+        .iter()
+        .enumerate()
+        .map(|(row_index, text)| {
+            let aliases = page_glyph_aliases
+                .get(row_index)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            Ok(ScriptDialoguePage {
+                text: text.clone(),
+                source_glyphs: encode_text_with_aliases(text, aliases, charset_map)?,
+            })
+        })
+        .collect()
+}
+
+fn remap_dialogue_invocation_words(
+    words: &mut [u16],
+    marker_remap: &BTreeMap<u32, u32>,
+) -> Result<(), AssetError> {
+    let mut index = 0usize;
+    while index + 1 < words.len() {
+        if words[index] == 0xff68 {
+            let old_marker = u32::from(words[index + 1]);
+            if let Some(new_marker) = marker_remap.get(&old_marker) {
+                words[index + 1] = u16::try_from(*new_marker).map_err(|_| {
+                    AssetError::InvalidProject("dialogue marker reference exceeds u16".to_owned())
+                })?;
+            }
+            index += 2;
+        } else {
+            index += 1;
+        }
+    }
+    Ok(())
+}
+
+fn clone_simple_dialogue_invocation(
+    words: &[u16],
+    original_marker: u32,
+    new_marker: u32,
+) -> Result<Vec<u16>, AssetError> {
+    if words.len() != 4 || words[0] != 0xfffb || words[1] != 0xff68 {
+        return Err(AssetError::InvalidProject(format!(
+            "dialogue marker {original_marker} wraps beyond one message entry, but its VM invocation is not the proven simple `FFFB FF68 marker arg` form"
+        )));
+    }
+    if u32::from(words[2]) != original_marker {
+        return Err(AssetError::InvalidProject(format!(
+            "dialogue marker {original_marker} wraps beyond one message entry, but the following simple VM invocation targets marker {}",
+            words[2]
+        )));
+    }
+    let mut cloned = words.to_vec();
+    cloned[2] = u16::try_from(new_marker).map_err(|_| {
+        AssetError::InvalidProject("dialogue continuation marker exceeds u16".to_owned())
+    })?;
+    Ok(cloned)
+}
+
+fn merge_engine_lines_to_user_text_with_joiners<'a, I>(lines: I, row_joiners: &[String]) -> String
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let parts = lines
+        .into_iter()
+        .map(|raw| raw.trim_matches(|ch| ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n'))
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    let mut out = String::new();
+    for (index, part) in parts.iter().enumerate() {
+        if index > 0 {
+            if let Some(joiner) = row_joiners.get(index - 1) {
+                out.push_str(joiner);
+            } else if let (Some(prev), Some(next)) = (out.chars().last(), part.chars().next()) {
+                if should_insert_user_text_space(prev, next) {
+                    out.push(' ');
+                }
+            }
+        }
+        out.push_str(part);
+    }
+    out
+}
+
+fn derive_heuristic_row_joiners<'a, I>(lines: I) -> Vec<String>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let parts = lines
+        .into_iter()
+        .map(|raw| raw.trim_matches(|ch| ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n'))
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    parts
+        .windows(2)
+        .map(|window| {
+            let left = window[0].chars().last();
+            let right = window[1].chars().next();
+            if let (Some(prev), Some(next)) = (left, right) {
+                if should_insert_user_text_space(prev, next) {
+                    return " ".to_owned();
+                }
+            }
+            String::new()
+        })
+        .collect()
+}
+
+fn should_insert_user_text_space(prev: char, next: char) -> bool {
+    if prev.is_whitespace() || next.is_whitespace() {
+        return false;
+    }
+    if matches!(next, ',' | '.' | ':' | ';' | '!' | '?' | '、' | '。' | '，' | '．' | '：' | '；' | '！' | '？' | ')' | ']' | '}' | '」' | '』' | '）' | '】') {
+        return false;
+    }
+    if matches!(prev, '(' | '[' | '{' | '「' | '『' | '（' | '【') {
+        return false;
+    }
+    if matches!(prev, '.' | ':' | ';' | '!' | '?' | '。' | '．' | '：' | '；' | '！' | '？')
+        && is_space_separated_script(next)
+    {
+        return true;
+    }
+    if (is_space_separated_script(prev) && is_cjk_or_kana_script(next))
+        || (is_cjk_or_kana_script(prev) && is_space_separated_script(next))
+    {
+        return true;
+    }
+    is_space_separated_script(prev) && is_space_separated_script(next)
+}
+
+fn is_space_separated_script(ch: char) -> bool {
+    ch.is_ascii_alphanumeric()
+        || ('\u{00c0}'..='\u{024f}').contains(&ch)
+        || ('\u{1e00}'..='\u{1eff}').contains(&ch)
+}
+
+fn is_cjk_or_kana_script(ch: char) -> bool {
+    ('\u{3040}'..='\u{30ff}').contains(&ch)
+        || ('\u{3400}'..='\u{4dbf}').contains(&ch)
+        || ('\u{4e00}'..='\u{9fff}').contains(&ch)
+        || ('\u{f900}'..='\u{faff}').contains(&ch)
+        || ('\u{ff66}'..='\u{ff9f}').contains(&ch)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,6 +494,13 @@ pub struct ScenarioTextItem {
 pub struct ScenarioStateBundle {
     pub document_version: u32,
     pub archive: String,
+    /// Internal route/navigation report formerly emitted as scenario-routing.json.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<ScenarioRoutingDocument>,
+    /// Internal row-joiner/continuation metadata formerly emitted as scenario-dialogue.meta.json.
+    /// This contains marker structure only; user-visible dialogue text and speakers remain only in scenario-dialogue.json.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dialogue_metadata: Option<ScenarioDialogueMetadataDocument>,
     pub entries: Vec<ScenarioStateEntry>,
 }
 
@@ -215,12 +561,29 @@ pub enum ScriptMachineNode {
         #[serde(default)]
         labels: Vec<String>,
         marker_index: u32,
+        /// Sparse glyph alias data for the speaker. The actual speaker string lives only in scenario-dialogue.json.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         speaker_glyph_aliases: Vec<ScriptGlyphAlias>,
+        /// Original physical row character counts. This is structural rebuild
+        /// state only; the row strings themselves live once in
+        /// scenario-dialogue.json and are reconstructed from these counts plus
+        /// row-joiner metadata when the stock row layout can be reused.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        page_char_counts: Vec<u32>,
         /// One sparse alias list per extracted page. Added/removed pages simply
         /// have no aliases and are encoded canonically.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         page_glyph_aliases: Vec<Vec<ScriptGlyphAlias>>,
+        /// 1-based page counts after which the engine script contains FFFB before
+        /// continuing the same dialogue marker.  Generated continuations repeat
+        /// non-empty speaker metadata after FFFB so later screens keep the nameplate.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        screen_break_after_pages: Vec<u32>,
+        /// 1-based page counts after which FFFB is followed by a repeated
+        /// speaker + FFFF refresh.  This is separate from screen breaks so
+        /// stock/no-refresh scripts round-trip without synthetic metadata.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        screen_speaker_refresh_after_pages: Vec<u32>,
     },
 }
 
@@ -266,10 +629,20 @@ pub enum ScriptSourceNode {
         /// reused only while they still decode to `speaker`, preserving charset
         /// aliases without preventing Unicode edits.
         speaker_source_glyphs: Vec<u16>,
-        /// Ordered screen/page bodies. Each page is terminated by FFFE in the
-        /// compiled stream; preserving the boundary is required because the
-        /// interpreter waits/advances at every terminator.
+        /// Ordered physical row bodies. Each row is terminated by FFFE in the
+        /// compiled stream.
         pages: Vec<ScriptDialoguePage>,
+        /// 1-based row/page counts after which the compiled stream contains FFFB.
+        /// Runtime testing showed FFFB is the screen-advance boundary; a fourth
+        /// FFFE without this command reuses and overwrites the three row slots.
+        /// When `speaker` is non-empty, build repeats `speaker` + FFFF after each
+        /// generated FFFB so continuation screens redraw the nameplate.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        screen_break_after_pages: Vec<u32>,
+        /// 1-based page counts after which a generated FFFB continuation repeats
+        /// the speaker/nameplate metadata before more dialogue rows.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        screen_speaker_refresh_after_pages: Vec<u32>,
     },
 }
 
@@ -472,6 +845,8 @@ fn compact_source_document(
                 speaker,
                 speaker_source_glyphs,
                 pages,
+                screen_break_after_pages,
+                screen_speaker_refresh_after_pages,
             } => Ok(ScriptMachineNode::Dialogue {
                 labels: labels.clone(),
                 marker_index: *marker_index,
@@ -480,12 +855,24 @@ fn compact_source_document(
                     speaker_source_glyphs,
                     charset_map,
                 )?,
+                page_char_counts: pages
+                    .iter()
+                    .map(|page| {
+                        u32::try_from(page.text.chars().count()).map_err(|_| {
+                            AssetError::InvalidProject(
+                                "dialogue page text length exceeds u32".to_owned(),
+                            )
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
                 page_glyph_aliases: pages
                     .iter()
                     .map(|page| {
                         collect_glyph_aliases(&page.text, &page.source_glyphs, charset_map)
                     })
                     .collect::<Result<Vec<_>, _>>()?,
+                screen_break_after_pages: screen_break_after_pages.clone(),
+                screen_speaker_refresh_after_pages: screen_speaker_refresh_after_pages.clone(),
             }),
         })
         .collect::<Result<Vec<_>, AssetError>>()?;
@@ -536,6 +923,14 @@ fn validate_machine_document(source: &ScriptMachineDocument) -> Result<(), Asset
     Ok(())
 }
 
+fn machine_simple_dialogue_invocation_target(node: &ScriptMachineNode) -> Option<u32> {
+    let ScriptMachineNode::Raw { words, .. } = node else {
+        return None;
+    };
+    (words.len() == 4 && words[0] == 0xfffb && words[1] == 0xff68)
+        .then_some(u32::from(words[2]))
+}
+
 fn hydrate_machine_source(
     source: &ScriptMachineDocument,
     edited: &ScenarioDialogueEntry,
@@ -559,13 +954,56 @@ fn hydrate_machine_source(
         .iter()
         .map(|item| (item.text_index, item))
         .collect::<BTreeMap<_, _>>();
+
+    let physical_dialogue_count = source
+        .nodes
+        .iter()
+        .filter(|node| matches!(node, ScriptMachineNode::Dialogue { .. }))
+        .count();
+    let source_generated_total = edited.dialogues.iter().try_fold(0usize, |total, dialogue| {
+        total
+            .checked_add(usize::try_from(dialogue.source_generated_marker_count()).map_err(|_| {
+                AssetError::InvalidProject(
+                    "dialogue continuation count exceeds usize".to_owned(),
+                )
+            })?)
+            .ok_or_else(|| {
+                AssetError::InvalidProject("dialogue continuation count overflows".to_owned())
+            })
+    })?;
+    let expected_logical_count = physical_dialogue_count
+        .checked_sub(source_generated_total)
+        .ok_or_else(|| {
+            AssetError::InvalidProject(format!(
+                "internal SC dialogue metadata for entry {} describes more generated markers than machine state contains",
+                source.entry_id
+            ))
+        })?;
+    if by_marker.len() != expected_logical_count {
+        return Err(AssetError::InvalidProject(format!(
+            "scenario-dialogue.json entry {} contains {} logical dialogue markers, expected {} after folding portable continuation metadata",
+            source.entry_id,
+            by_marker.len(),
+            expected_logical_count
+        )));
+    }
+
     let mut nodes = Vec::with_capacity(source.nodes.len());
-    for node in &source.nodes {
-        match node {
-            ScriptMachineNode::Raw { labels, words } => nodes.push(ScriptSourceNode::Raw {
-                labels: labels.clone(),
-                words: words.clone(),
-            }),
+    let mut next_marker_index = 0u32;
+    let mut logical_marker_index = 0u32;
+    let mut marker_remap = BTreeMap::<u32, u32>::new();
+    let mut node_index = 0usize;
+    while node_index < source.nodes.len() {
+        match &source.nodes[node_index] {
+            ScriptMachineNode::Raw { labels, words } => {
+                let mut words = words.clone();
+                remap_dialogue_invocation_words(&mut words, &marker_remap)?;
+                nodes.push(ScriptSourceNode::Raw {
+                    labels: labels.clone(),
+                    words,
+                });
+                node_index += 1;
+            }
             ScriptMachineNode::Text {
                 labels,
                 text_index,
@@ -599,55 +1037,342 @@ fn hydrate_machine_source(
                     )?,
                     suffix_words: suffix_words.clone(),
                 });
+                node_index += 1;
             }
             ScriptMachineNode::Dialogue {
-                labels,
-                marker_index,
-                speaker_glyph_aliases,
-                page_glyph_aliases,
+                marker_index: physical_root_marker,
+                ..
             } => {
-                let edit = by_marker.remove(marker_index).ok_or_else(|| {
+                let edit = by_marker.remove(&logical_marker_index).ok_or_else(|| {
                     AssetError::InvalidProject(format!(
-                        "scenario-dialogue.json entry {} omits marker {}",
-                        source.entry_id, marker_index
+                        "scenario-dialogue.json entry {} omits logical marker {}",
+                        source.entry_id, logical_marker_index
                     ))
                 })?;
-                let pages = edit
-                    .pages
-                    .iter()
-                    .enumerate()
-                    .map(|(index, text)| {
-                        let aliases = page_glyph_aliases
-                            .get(index)
-                            .map(Vec::as_slice)
-                            .unwrap_or(&[]);
-                        Ok(ScriptDialoguePage {
-                            text: text.clone(),
-                            source_glyphs: encode_text_with_aliases(
-                                text,
-                                aliases,
+                let old_generated_count = usize::try_from(edit.source_generated_marker_count())
+                    .map_err(|_| {
+                        AssetError::InvalidProject(
+                            "dialogue continuation count exceeds usize".to_owned(),
+                        )
+                    })?;
+                let old_screen_count = old_generated_count.checked_add(1).ok_or_else(|| {
+                    AssetError::InvalidProject("dialogue continuation count overflows".to_owned())
+                })?;
+                let mut old_screen_indexes = Vec::<usize>::with_capacity(old_screen_count);
+                let mut old_screen_counts = Vec::<Vec<u32>>::with_capacity(old_screen_count);
+                let mut old_page_char_counts = Vec::<u32>::new();
+
+                for screen_offset in 0..old_screen_count {
+                    let dialogue_index = if old_generated_count == 0 {
+                        node_index
+                    } else {
+                        node_index
+                            .checked_add(screen_offset.checked_mul(2).ok_or_else(|| {
+                                AssetError::InvalidProject(
+                                    "dialogue continuation node index overflows".to_owned(),
+                                )
+                            })?)
+                            .ok_or_else(|| {
+                                AssetError::InvalidProject(
+                                    "dialogue continuation node index overflows".to_owned(),
+                                )
+                            })?
+                    };
+                    let Some(ScriptMachineNode::Dialogue {
+                        marker_index,
+                        page_char_counts,
+                        ..
+                    }) = source.nodes.get(dialogue_index)
+                    else {
+                        return Err(AssetError::InvalidProject(format!(
+                            "portable dialogue metadata does not match machine state entry {} logical marker {}",
+                            source.entry_id, logical_marker_index
+                        )));
+                    };
+                    let expected_marker = physical_root_marker
+                        .checked_add(u32::try_from(screen_offset).map_err(|_| {
+                            AssetError::InvalidProject(
+                                "dialogue continuation count exceeds u32".to_owned(),
+                            )
+                        })?)
+                        .ok_or_else(|| {
+                            AssetError::InvalidProject(
+                                "dialogue continuation marker overflows".to_owned(),
+                            )
+                        })?;
+                    if *marker_index != expected_marker {
+                        return Err(AssetError::InvalidProject(format!(
+                            "portable dialogue metadata expects machine marker {}, found {} in entry {}",
+                            expected_marker, marker_index, source.entry_id
+                        )));
+                    }
+                    if old_generated_count > 0 {
+                        let invocation_index = dialogue_index.checked_add(1).ok_or_else(|| {
+                            AssetError::InvalidProject(
+                                "dialogue continuation node index overflows".to_owned(),
+                            )
+                        })?;
+                        if source
+                            .nodes
+                            .get(invocation_index)
+                            .and_then(machine_simple_dialogue_invocation_target)
+                            != Some(*marker_index)
+                        {
+                            return Err(AssetError::InvalidProject(format!(
+                                "portable dialogue metadata does not match machine state entry {}: marker {} is not followed by `FFFB FF68 marker arg`",
+                                source.entry_id, marker_index
+                            )));
+                        }
+                    }
+                    old_screen_counts.push(page_char_counts.clone());
+                    old_page_char_counts.extend(page_char_counts.iter().copied());
+                    old_screen_indexes.push(dialogue_index);
+                }
+
+                let row_joiners = edit.row_joiners_for_build();
+                let stock_pages = split_text_by_machine_page_counts(
+                    &normalize_user_text_for_build(&edit.text),
+                    &old_page_char_counts,
+                    &row_joiners,
+                );
+                let stock_screens = stock_pages.as_ref().map(|pages| {
+                    let mut offset = 0usize;
+                    old_screen_counts
+                        .iter()
+                        .map(|counts| {
+                            let end = offset.saturating_add(counts.len());
+                            let screen = pages[offset..end].to_vec();
+                            offset = end;
+                            screen
+                        })
+                        .collect::<Vec<_>>()
+                });
+                let stock_unchanged = stock_screens
+                    .as_ref()
+                    .map(|screens| {
+                        edit.engine_screens_override
+                            .as_ref()
+                            .map(|overrides| overrides == screens)
+                            .unwrap_or(true)
+                    })
+                    .unwrap_or(false);
+                if stock_unchanged {
+                    for (screen_index, &dialogue_index) in old_screen_indexes.iter().enumerate() {
+                        let ScriptMachineNode::Dialogue {
+                            labels,
+                            marker_index,
+                            speaker_glyph_aliases,
+                            page_char_counts: _,
+                            page_glyph_aliases,
+                            screen_break_after_pages,
+                            screen_speaker_refresh_after_pages,
+                        } = &source.nodes[dialogue_index]
+                        else {
+                            unreachable!("validated generated dialogue chain");
+                        };
+                        let current_marker = next_marker_index;
+                        marker_remap.insert(*marker_index, current_marker);
+                        nodes.push(ScriptSourceNode::Dialogue {
+                            labels: labels.clone(),
+                            marker_index: current_marker,
+                            speaker: edit.speaker.clone(),
+                            speaker_source_glyphs: encode_text_with_aliases(
+                                &edit.speaker,
+                                speaker_glyph_aliases,
                                 charset_map,
                             )?,
+                            pages: rebuild_machine_pages_from_texts(
+                                &stock_screens
+                                    .as_ref()
+                                    .expect("stock screens were reconstructed")[screen_index],
+                                page_glyph_aliases,
+                                charset_map,
+                            )?,
+                            screen_break_after_pages: screen_break_after_pages.clone(),
+                            screen_speaker_refresh_after_pages:
+                                screen_speaker_refresh_after_pages.clone(),
+                        });
+                        if old_generated_count > 0 {
+                            let ScriptMachineNode::Raw { labels, words } =
+                                &source.nodes[dialogue_index + 1]
+                            else {
+                                unreachable!("validated generated invocation chain");
+                            };
+                            let mut words = words.clone();
+                            remap_dialogue_invocation_words(&mut words, &marker_remap)?;
+                            nodes.push(ScriptSourceNode::Raw {
+                                labels: labels.clone(),
+                                words,
+                            });
+                        }
+                        next_marker_index = next_marker_index.checked_add(1).ok_or_else(|| {
+                            AssetError::InvalidProject(
+                                "dialogue marker count overflows".to_owned(),
+                            )
+                        })?;
+                    }
+                    node_index += if old_generated_count > 0 {
+                        old_screen_count.checked_mul(2).ok_or_else(|| {
+                            AssetError::InvalidProject(
+                                "dialogue continuation node count overflows".to_owned(),
+                            )
+                        })?
+                    } else {
+                        1
+                    };
+                    logical_marker_index = logical_marker_index.checked_add(1).ok_or_else(|| {
+                        AssetError::InvalidProject("logical marker count overflows".to_owned())
+                    })?;
+                    continue;
+                }
+
+                if edit.engine_screens_override.is_none()
+                    && (edit.source_generated_marker_count() > 0
+                        || !edit.row_joiners_for_build().is_empty())
+                {
+                    return Err(AssetError::InvalidProject(format!(
+                        "scenario-dialogue.json entry {} logical marker {} was edited after fold-back; rebuild with the same --wrap-width-table/profile so continuation and row-joiner metadata can be regenerated",
+                        source.entry_id, logical_marker_index
+                    )));
+                }
+
+                let screens = edit.engine_screens_for_build();
+                if screens.is_empty() {
+                    return Err(AssetError::InvalidProject(format!(
+                        "dialogue marker {} materialized no message screens",
+                        logical_marker_index
+                    )));
+                }
+                let invocation_template = if old_generated_count > 0 || screens.len() > 1 {
+                    let Some(ScriptMachineNode::Raw { labels, words }) =
+                        source.nodes.get(node_index + 1)
+                    else {
+                        return Err(AssetError::InvalidProject(format!(
+                            "dialogue marker {} wraps beyond one message entry, but no following VM invocation node is available",
+                            logical_marker_index
+                        )));
+                    };
+                    if machine_simple_dialogue_invocation_target(&source.nodes[node_index + 1])
+                        != Some(*physical_root_marker)
+                    {
+                        return Err(AssetError::InvalidProject(format!(
+                            "dialogue marker {} wraps beyond one message entry, but its VM invocation is not the proven simple `FFFB FF68 marker arg` form",
+                            logical_marker_index
+                        )));
+                    }
+                    Some((labels.clone(), words.clone()))
+                } else {
+                    None
+                };
+
+                let first_new_marker = next_marker_index;
+                let new_screen_count = screens.len();
+                let last_new_marker = first_new_marker
+                    .checked_add(u32::try_from(new_screen_count.saturating_sub(1)).map_err(|_| {
+                        AssetError::InvalidProject(
+                            "dialogue screen count exceeds u32".to_owned(),
+                        )
+                    })?)
+                    .ok_or_else(|| {
+                        AssetError::InvalidProject("dialogue marker count overflows".to_owned())
+                    })?;
+                for screen_offset in 0..old_screen_count {
+                    let old_marker = physical_root_marker
+                        .checked_add(u32::try_from(screen_offset).map_err(|_| {
+                            AssetError::InvalidProject(
+                                "dialogue continuation count exceeds u32".to_owned(),
+                            )
+                        })?)
+                        .ok_or_else(|| {
+                            AssetError::InvalidProject(
+                                "dialogue continuation marker overflows".to_owned(),
+                            )
+                        })?;
+                    let mapped = first_new_marker
+                        .checked_add(u32::try_from(screen_offset.min(new_screen_count.saturating_sub(1))).map_err(|_| {
+                            AssetError::InvalidProject(
+                                "dialogue continuation count exceeds u32".to_owned(),
+                            )
+                        })?)
+                        .unwrap_or(last_new_marker)
+                        .min(last_new_marker);
+                    marker_remap.insert(old_marker, mapped);
+                }
+
+                let ScriptMachineNode::Dialogue {
+                    labels: root_labels,
+                    speaker_glyph_aliases,
+                    ..
+                } = &source.nodes[node_index]
+                else {
+                    unreachable!("current node is dialogue");
+                };
+                for (screen_index, screen_rows) in screens.iter().enumerate() {
+                    let current_marker = next_marker_index;
+                    let pages = screen_rows
+                        .iter()
+                        .map(|text| {
+                            Ok(ScriptDialoguePage {
+                                text: text.clone(),
+                                source_glyphs: encode_text_with_aliases(text, &[], charset_map)?,
+                            })
                         })
-                    })
-                    .collect::<Result<Vec<_>, AssetError>>()?;
-                nodes.push(ScriptSourceNode::Dialogue {
-                    labels: labels.clone(),
-                    marker_index: *marker_index,
-                    speaker: edit.speaker.clone(),
-                    speaker_source_glyphs: encode_text_with_aliases(
-                        &edit.speaker,
-                        speaker_glyph_aliases,
-                        charset_map,
-                    )?,
-                    pages,
-                });
+                        .collect::<Result<Vec<_>, AssetError>>()?;
+                    nodes.push(ScriptSourceNode::Dialogue {
+                        labels: if screen_index == 0 {
+                            root_labels.clone()
+                        } else {
+                            Vec::new()
+                        },
+                        marker_index: current_marker,
+                        speaker: edit.speaker.clone(),
+                        speaker_source_glyphs: encode_text_with_aliases(
+                            &edit.speaker,
+                            speaker_glyph_aliases,
+                            charset_map,
+                        )?,
+                        pages,
+                        screen_break_after_pages: Vec::new(),
+                        screen_speaker_refresh_after_pages: Vec::new(),
+                    });
+                    if let Some((raw_labels, words)) = invocation_template.as_ref() {
+                        nodes.push(ScriptSourceNode::Raw {
+                            labels: if screen_index == 0 {
+                                raw_labels.clone()
+                            } else {
+                                Vec::new()
+                            },
+                            words: clone_simple_dialogue_invocation(
+                                words,
+                                *physical_root_marker,
+                                current_marker,
+                            )?,
+                        });
+                    }
+                    next_marker_index = next_marker_index.checked_add(1).ok_or_else(|| {
+                        AssetError::InvalidProject("dialogue marker count overflows".to_owned())
+                    })?;
+                }
+                node_index += if old_generated_count > 0 {
+                    old_screen_count.checked_mul(2).ok_or_else(|| {
+                        AssetError::InvalidProject(
+                            "dialogue continuation node count overflows".to_owned(),
+                        )
+                    })?
+                } else if invocation_template.is_some() {
+                    2
+                } else {
+                    1
+                };
+                logical_marker_index = logical_marker_index.checked_add(1).ok_or_else(|| {
+                    AssetError::InvalidProject("logical marker count overflows".to_owned())
+                })?;
             }
         }
     }
     if let Some(marker) = by_marker.keys().next() {
         return Err(AssetError::InvalidProject(format!(
-            "scenario-dialogue.json entry {} contains unknown marker {}",
+            "scenario-dialogue.json entry {} contains unknown logical marker {}",
             source.entry_id, marker
         )));
     }
@@ -666,7 +1391,7 @@ fn hydrate_machine_source(
         secondary_records: secondary_records.to_vec(),
         relocation_model: source.relocation_model.clone(),
     };
-    validate_source_text_coverage(&hydrated)?;
+    validate_source_text_coverage(&hydrated, charset_map)?;
     Ok(hydrated)
 }
 
@@ -683,6 +1408,8 @@ struct ScriptTextRange {
     speaker_start: usize,
     speaker_end: usize,
     pages: Vec<ScriptPageRange>,
+    screen_break_after_pages: Vec<u32>,
+    screen_speaker_refresh_after_pages: Vec<u32>,
     end: usize,
 }
 
@@ -770,11 +1497,55 @@ pub struct ScriptBuildInfo {
 pub fn decode(
     input: &[u8],
     asset_directory: &Path,
-    _output_stem: &str,
+    output_stem: &str,
     entry_id: u32,
     allocation_size: usize,
 ) -> Result<AssetKind, AssetError> {
-    let parsed = parse(input, entry_id, allocation_size)?;
+    decode_with_charset(
+        input,
+        asset_directory,
+        output_stem,
+        entry_id,
+        allocation_size,
+        charset::default_map(),
+    )
+}
+
+pub fn decode_with_charset(
+    input: &[u8],
+    asset_directory: &Path,
+    output_stem: &str,
+    entry_id: u32,
+    allocation_size: usize,
+    charset_map: &charset::CharsetMap,
+) -> Result<AssetKind, AssetError> {
+    decode_with_charset_and_metadata(
+        input,
+        asset_directory,
+        output_stem,
+        entry_id,
+        allocation_size,
+        charset_map,
+        None,
+    )
+}
+
+pub fn decode_with_charset_and_metadata(
+    input: &[u8],
+    asset_directory: &Path,
+    _output_stem: &str,
+    entry_id: u32,
+    allocation_size: usize,
+    charset_map: &charset::CharsetMap,
+    engine_metadata: Option<ScMetadata>,
+) -> Result<AssetKind, AssetError> {
+    let parsed = parse_with_metadata_policy_and_override(
+        input,
+        entry_id,
+        allocation_size,
+        true,
+        engine_metadata,
+    )?;
     let internal_directory = asset_directory.join(".rz-internal").join("sc");
     fs::create_dir_all(&internal_directory)?;
     let editable_file_name = format!("id{entry_id:05}.script-ir.json");
@@ -787,12 +1558,14 @@ pub fn decode(
         &parsed.stream_table,
         &parsed.primary_offsets,
         &parsed.secondary_records,
+        charset_map,
     )?;
     validate_source_roundtrip(
         entry_id,
         &parsed.words,
         &parsed.secondary_records,
         &source_document,
+        charset_map,
     )?;
     let secondary_records = std::mem::take(&mut source_document.secondary_records);
     fs::write(
@@ -826,10 +1599,220 @@ pub fn decode(
     })
 }
 
+fn simple_dialogue_invocation_target(node: &ScriptSourceNode) -> Option<u32> {
+    let ScriptSourceNode::Raw { words, .. } = node else {
+        return None;
+    };
+    (words.len() == 4 && words[0] == 0xfffb && words[1] == 0xff68)
+        .then_some(u32::from(words[2]))
+}
+
+fn build_dialogue_entry_from_source(
+    source: &ScriptSourceDocument,
+    metadata: &BTreeMap<(u32, u32), ScenarioDialogueMetadataItem>,
+) -> Result<ScenarioDialogueEntry, AssetError> {
+    let dialogue_nodes = source
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(node_index, node)| match node {
+            ScriptSourceNode::Dialogue {
+                marker_index,
+                speaker,
+                pages,
+                ..
+            } => Some((*marker_index, (node_index, speaker, pages))),
+            ScriptSourceNode::Raw { .. } | ScriptSourceNode::Text { .. } => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+    let physical_count = u32::try_from(dialogue_nodes.len()).map_err(|_| {
+        AssetError::InvalidProject("scenario dialogue count exceeds u32".to_owned())
+    })?;
+    for marker_index in 0..physical_count {
+        if !dialogue_nodes.contains_key(&marker_index) {
+            return Err(AssetError::InvalidProject(format!(
+                "SC entry {} has a non-contiguous primary marker sequence; missing marker {}",
+                source.entry_id, marker_index
+            )));
+        }
+    }
+
+    let entry_metadata = metadata
+        .iter()
+        .filter_map(|(&(entry_id, marker_index), item)| {
+            (entry_id == source.entry_id).then_some((marker_index, item))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let generated_total = entry_metadata.values().try_fold(0u32, |total, item| {
+        total.checked_add(item.generated_marker_count).ok_or_else(|| {
+            AssetError::InvalidProject(format!(
+                "dialogue continuation count overflows for entry {}",
+                source.entry_id
+            ))
+        })
+    })?;
+    let logical_count = physical_count.checked_sub(generated_total).ok_or_else(|| {
+        AssetError::InvalidProject(format!(
+            "dialogue metadata for entry {} generates more markers than the archive contains",
+            source.entry_id
+        ))
+    })?;
+    if let Some((&marker_index, _)) = entry_metadata.range(logical_count..).next() {
+        return Err(AssetError::InvalidProject(format!(
+            "dialogue metadata entry {} references logical marker {}, but only {} logical markers remain after folding",
+            source.entry_id, marker_index, logical_count
+        )));
+    }
+
+    let mut dialogues = Vec::with_capacity(usize::try_from(logical_count).unwrap_or(0));
+    let mut physical_shift = 0u32;
+    for logical_marker in 0..logical_count {
+        let item = entry_metadata.get(&logical_marker).copied();
+        let generated_marker_count = item
+            .map(|value| value.generated_marker_count)
+            .unwrap_or(0);
+        let physical_root = logical_marker.checked_add(physical_shift).ok_or_else(|| {
+            AssetError::InvalidProject("dialogue marker mapping overflows u32".to_owned())
+        })?;
+        let screen_count = generated_marker_count.checked_add(1).ok_or_else(|| {
+            AssetError::InvalidProject("dialogue continuation count overflows".to_owned())
+        })?;
+        let mut speaker = None::<String>;
+        let mut page_texts = Vec::<String>::new();
+
+        for screen_offset in 0..screen_count {
+            let physical_marker = physical_root.checked_add(screen_offset).ok_or_else(|| {
+                AssetError::InvalidProject("dialogue marker mapping overflows u32".to_owned())
+            })?;
+            let Some((node_index, screen_speaker, pages)) =
+                dialogue_nodes.get(&physical_marker).copied()
+            else {
+                return Err(AssetError::InvalidProject(format!(
+                    "dialogue metadata entry {} marker {} expects physical marker {}, but it is missing",
+                    source.entry_id, logical_marker, physical_marker
+                )));
+            };
+            if let Some(expected) = speaker.as_deref() {
+                if expected != screen_speaker.as_str() {
+                    return Err(AssetError::InvalidProject(format!(
+                        "dialogue continuation entry {} marker {} changes speaker at physical marker {}",
+                        source.entry_id, logical_marker, physical_marker
+                    )));
+                }
+            } else {
+                speaker = Some(screen_speaker.clone());
+            }
+            if generated_marker_count > 0 {
+                let invocation_index = node_index.checked_add(1).ok_or_else(|| {
+                    AssetError::InvalidProject("dialogue node index overflows".to_owned())
+                })?;
+                let target = source
+                    .nodes
+                    .get(invocation_index)
+                    .and_then(simple_dialogue_invocation_target);
+                if target != Some(physical_marker) {
+                    return Err(AssetError::InvalidProject(format!(
+                        "portable dialogue metadata does not match SC entry {}: physical marker {} is not followed by the proven `FFFB FF68 marker arg` invocation",
+                        source.entry_id, physical_marker
+                    )));
+                }
+                if screen_offset > 0 {
+                    let screen_offset_usize = usize::try_from(screen_offset).map_err(|_| {
+                        AssetError::InvalidProject(
+                            "dialogue continuation count exceeds usize".to_owned(),
+                        )
+                    })?;
+                    let node_offset = screen_offset_usize.checked_mul(2).ok_or_else(|| {
+                        AssetError::InvalidProject(
+                            "dialogue continuation node index overflows".to_owned(),
+                        )
+                    })?;
+                    let expected_node_index = dialogue_nodes
+                        .get(&physical_root)
+                        .map(|(root_index, _, _)| *root_index)
+                        .unwrap_or(node_index)
+                        .checked_add(node_offset)
+                        .ok_or_else(|| {
+                            AssetError::InvalidProject("dialogue continuation node index overflows".to_owned())
+                        })?;
+                    if node_index != expected_node_index {
+                        return Err(AssetError::InvalidProject(format!(
+                            "portable dialogue metadata does not match SC entry {}: physical marker {} is not an adjacent generated continuation",
+                            source.entry_id, physical_marker
+                        )));
+                    }
+                }
+            }
+            page_texts.extend(pages.iter().map(|page| page.text.clone()));
+        }
+
+        let row_joiners = match item {
+            Some(item) => {
+                let expected = page_texts.len().saturating_sub(1);
+                if item.row_joiners.len() != expected {
+                    return Err(AssetError::InvalidProject(format!(
+                        "dialogue metadata entry {} marker {} contains {} row joiners for {} physical rows; expected {}",
+                        source.entry_id,
+                        logical_marker,
+                        item.row_joiners.len(),
+                        page_texts.len(),
+                        expected
+                    )));
+                }
+                item.row_joiners.clone()
+            }
+            None => derive_heuristic_row_joiners(page_texts.iter().map(String::as_str)),
+        };
+        dialogues.push(ScenarioDialogueItem {
+            marker_index: logical_marker,
+            speaker: speaker.unwrap_or_default(),
+            text: merge_engine_lines_to_user_text_with_joiners(
+                page_texts.iter().map(String::as_str),
+                &row_joiners,
+            ),
+            engine_lines_override: None,
+            engine_screens_override: None,
+            row_joiners_override: Some(row_joiners),
+            generated_marker_count_override: Some(generated_marker_count),
+        });
+        physical_shift = physical_shift
+            .checked_add(generated_marker_count)
+            .ok_or_else(|| {
+                AssetError::InvalidProject("dialogue marker mapping overflows u32".to_owned())
+            })?;
+    }
+
+    let mut texts = source
+        .nodes
+        .iter()
+        .filter_map(|node| match node {
+            ScriptSourceNode::Text {
+                text_index,
+                grammar,
+                text,
+                ..
+            } => Some(ScenarioTextItem {
+                text_index: *text_index,
+                grammar: *grammar,
+                text: text.clone(),
+            }),
+            ScriptSourceNode::Raw { .. } | ScriptSourceNode::Dialogue { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    texts.sort_by_key(|item| item.text_index);
+    Ok(ScenarioDialogueEntry {
+        entry_id: source.entry_id,
+        dialogues,
+        texts,
+    })
+}
+
 pub fn write_routing_document(
     asset_directory: &Path,
     assets: &[AssetEntry],
     debug_script_ir: bool,
+    charset_map: &charset::CharsetMap,
+    portable_dialogue_metadata: Option<&ScenarioDialogueMetadataDocument>,
 ) -> Result<Vec<u32>, AssetError> {
     let mut documents =
         BTreeMap::<u32, (u32, String, ScriptDocument, ScriptSourceDocument)>::new();
@@ -866,6 +1849,21 @@ pub fn write_routing_document(
         {
             return Err(AssetError::InvalidProject(format!(
                 "sc.cpk has duplicate engine ID {entry_id}"
+            )));
+        }
+    }
+
+    let portable_metadata_index = match portable_dialogue_metadata {
+        Some(document) => index_dialogue_metadata_document(
+            document,
+            "portable dialogue metadata companion",
+        )?,
+        None => BTreeMap::new(),
+    };
+    for &(entry_id, marker_index) in portable_metadata_index.keys() {
+        if !documents.contains_key(&entry_id) {
+            return Err(AssetError::InvalidProject(format!(
+                "portable dialogue metadata references missing SC entry {entry_id} marker {marker_index}"
             )));
         }
     }
@@ -968,49 +1966,9 @@ pub fn write_routing_document(
             let (_, _, _, source) = documents
                 .get(&placement.entry_id)
                 .expect("navigation entry must exist in the document map");
-            let mut dialogues = source
-                .nodes
-                .iter()
-                .filter_map(|node| match node {
-                    ScriptSourceNode::Dialogue {
-                        marker_index,
-                        speaker,
-                        pages,
-                        ..
-                    } => Some(ScenarioDialogueItem {
-                        marker_index: *marker_index,
-                        speaker: speaker.clone(),
-                        pages: pages.iter().map(|page| page.text.clone()).collect(),
-                    }),
-                    ScriptSourceNode::Raw { .. } | ScriptSourceNode::Text { .. } => None,
-                })
-                .collect::<Vec<_>>();
-            dialogues.sort_by_key(|dialogue| dialogue.marker_index);
-            let mut texts = source
-                .nodes
-                .iter()
-                .filter_map(|node| match node {
-                    ScriptSourceNode::Text {
-                        text_index,
-                        grammar,
-                        text,
-                        ..
-                    } => Some(ScenarioTextItem {
-                        text_index: *text_index,
-                        grammar: *grammar,
-                        text: text.clone(),
-                    }),
-                    ScriptSourceNode::Raw { .. } | ScriptSourceNode::Dialogue { .. } => None,
-                })
-                .collect::<Vec<_>>();
-            texts.sort_by_key(|item| item.text_index);
-            ScenarioDialogueEntry {
-                entry_id: placement.entry_id,
-                dialogues,
-                texts,
-            }
+            build_dialogue_entry_from_source(source, &portable_metadata_index)
         })
-        .collect();
+        .collect::<Result<Vec<_>, AssetError>>()?;
     let dialogue_document = ScenarioDialogueDocument {
         document_version: DIALOGUE_DOCUMENT_VERSION,
         archive: "sc.cpk".to_owned(),
@@ -1020,6 +1978,35 @@ pub fn write_routing_document(
         asset_directory.join("scenario-dialogue.json"),
         serde_json::to_vec_pretty(&dialogue_document)?,
     )?;
+    let dialogue_metadata_entries = dialogue_document
+        .entries
+        .iter()
+        .map(|entry| (entry.entry_id, entry.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let dialogue_metadata_document =
+        build_dialogue_metadata_document(&dialogue_metadata_entries, None);
+
+    let routing_document = ScenarioRoutingDocument {
+        document_version: ROUTING_DOCUMENT_VERSION,
+        archive: "sc.cpk".to_owned(),
+        identity_model: "entry_id is the engine-visible ITOC file ID passed unchanged to FUN_81053CB6; archive_order records CPK iteration/emission order and is not a scenario number"
+            .to_owned(),
+        chronology_model: "the scenario is a branching directed graph and has no single universal playthrough chronology. scenario-dialogue.json uses deterministic presentation order while entry_id remains the engine-visible identity"
+            .to_owned(),
+        navigation_model: "dependency-aware topological presentation beginning at startup entry 86. Observed FFEF edges constrain source before target; shared convergence nodes wait for all observed predecessors. Disconnected components are appended by engine-ID root order"
+            .to_owned(),
+        transition_model: "each item is an FFEF word triple found in a raw node whose target entry and stream are in range. The complete opcode-width/control-flow grammar is not recovered, so this is navigation evidence rather than a guaranteed execution trace"
+            .to_owned(),
+        dialogue_document: "scenario-dialogue.json".to_owned(),
+        startup: ScenarioRouteTarget {
+            entry_id: 0x56,
+            stream_id: 0,
+            evidence: "new-game initialization at 0x8101AD94 calls FUN_8101BEC6 with r0=0x56 and r3=0"
+                .to_owned(),
+        },
+        entries,
+        transitions,
+    };
 
     if debug_script_ir {
         let debug_directory = asset_directory.join("debug").join("scenario-ir");
@@ -1056,13 +2043,15 @@ pub fn write_routing_document(
             Ok(ScenarioStateEntry {
                 entry_id: placement.entry_id,
                 state: compact_script_state(state),
-                source: compact_source_document(source, charset::default_map())?,
+                source: compact_source_document(source, charset_map)?,
             })
         })
         .collect::<Result<Vec<_>, AssetError>>()?;
     let bundle = ScenarioStateBundle {
         document_version: STATE_BUNDLE_VERSION,
         archive: "sc.cpk".to_owned(),
+        routing: Some(routing_document),
+        dialogue_metadata: Some(dialogue_metadata_document),
         entries: bundle_entries,
     };
     let internal_directory = asset_directory.join(".rz-internal");
@@ -1074,32 +2063,6 @@ pub fn write_routing_document(
     if temporary_entry_directory.exists() {
         fs::remove_dir_all(temporary_entry_directory)?;
     }
-
-    let document = ScenarioRoutingDocument {
-        document_version: ROUTING_DOCUMENT_VERSION,
-        archive: "sc.cpk".to_owned(),
-        identity_model: "entry_id is the engine-visible ITOC file ID passed unchanged to FUN_81053CB6; archive_order records CPK iteration/emission order and is not a scenario number"
-            .to_owned(),
-        chronology_model: "the scenario is a branching directed graph and has no single universal playthrough chronology. scenario-dialogue.json uses deterministic presentation order while entry_id remains the engine-visible identity"
-            .to_owned(),
-        navigation_model: "dependency-aware topological presentation beginning at startup entry 86. Observed FFEF edges constrain source before target; shared convergence nodes wait for all observed predecessors. Disconnected components are appended by engine-ID root order"
-            .to_owned(),
-        transition_model: "each item is an FFEF word triple found in a raw node whose target entry and stream are in range. The complete opcode-width/control-flow grammar is not recovered, so this is navigation evidence rather than a guaranteed execution trace"
-            .to_owned(),
-        dialogue_document: "scenario-dialogue.json".to_owned(),
-        startup: ScenarioRouteTarget {
-            entry_id: 0x56,
-            stream_id: 0,
-            evidence: "new-game initialization at 0x8101AD94 calls FUN_8101BEC6 with r0=0x56 and r3=0"
-                .to_owned(),
-        },
-        entries,
-        transitions,
-    };
-    fs::write(
-        asset_directory.join("scenario-routing.json"),
-        serde_json::to_vec_pretty(&document)?,
-    )?;
     Ok(navigation.iter().map(|item| item.entry_id).collect())
 }
 
@@ -1326,34 +2289,43 @@ pub fn apply_presentation_order(
     Ok(())
 }
 
-pub fn load_state_bundle(
-    project_directory: &Path,
-) -> Result<BTreeMap<u32, ScenarioStateEntry>, AssetError> {
-    let path = project_directory.join(STATE_BUNDLE_PATH);
+fn read_state_bundle_document(project_directory: &Path) -> Result<ScenarioStateBundle, AssetError> {
+    let preferred = project_directory.join(STATE_BUNDLE_PATH);
+    let path = if preferred.exists() {
+        preferred
+    } else {
+        project_directory.join(LEGACY_STATE_BUNDLE_PATH)
+    };
     let mut decoder = GzDecoder::new(fs::File::open(&path)?);
     let mut encoded = Vec::new();
     decoder.read_to_end(&mut encoded)?;
     let bundle: ScenarioStateBundle = serde_json::from_slice(&encoded)?;
-    if bundle.document_version != STATE_BUNDLE_VERSION
-        || !bundle.archive.eq_ignore_ascii_case("sc.cpk")
-    {
-        return Err(AssetError::InvalidProject(
-            ".rz-internal/sc-state.json.gz has an unsupported version or archive identity; re-extract sc.cpk with this 1.0.1 build because the compact state no longer duplicates scenario text"
-                .to_owned(),
-        ));
+    let version_ok = bundle.document_version == STATE_BUNDLE_VERSION;
+    if !version_ok || !bundle.archive.eq_ignore_ascii_case("sc.cpk") {
+        return Err(AssetError::InvalidProject(format!(
+            "{} has an unsupported version or archive identity; re-extract sc.cpk with this build",
+            path.display()
+        )));
     }
+    Ok(bundle)
+}
+
+pub fn load_state_bundle(
+    project_directory: &Path,
+) -> Result<BTreeMap<u32, ScenarioStateEntry>, AssetError> {
+    let bundle = read_state_bundle_document(project_directory)?;
     let mut entries = BTreeMap::new();
     for entry in bundle.entries {
         if entry.entry_id != entry.state.entry_id || entry.entry_id != entry.source.entry_id {
             return Err(AssetError::InvalidProject(
-                "SC state bundle contains an entry ID mismatch".to_owned(),
+                "SC build state bundle contains an entry ID mismatch".to_owned(),
             ));
         }
         validate_machine_state(&entry.state)?;
         validate_machine_document(&entry.source)?;
         if entries.insert(entry.entry_id, entry).is_some() {
             return Err(AssetError::InvalidProject(
-                "SC state bundle contains a duplicate entry_id".to_owned(),
+                "SC build state bundle contains a duplicate entry_id".to_owned(),
             ));
         }
     }
@@ -1382,9 +2354,10 @@ pub fn load_dialogue_document(
                     entry.entry_id, dialogue.marker_index
                 )));
             }
-            if dialogue.pages.is_empty() {
+            let engine_lines = dialogue.engine_lines();
+            if engine_lines.iter().all(|line| line.is_empty()) {
                 return Err(AssetError::InvalidProject(format!(
-                    "scenario-dialogue.json entry {} marker {} has no pages",
+                    "scenario-dialogue.json entry {} marker {} has no text",
                     entry.entry_id, dialogue.marker_index
                 )));
             }
@@ -1410,12 +2383,173 @@ pub fn load_dialogue_document(
             ));
         }
     }
+    let metadata = load_dialogue_metadata_document(project_directory)?;
+    for ((entry_id, marker_index), item) in metadata {
+        let entry = entries.get_mut(&entry_id).ok_or_else(|| {
+            AssetError::InvalidProject(format!(
+                "internal SC dialogue metadata references missing entry {}",
+                entry_id
+            ))
+        })?;
+        let dialogue = entry
+            .dialogues
+            .iter_mut()
+            .find(|dialogue| dialogue.marker_index == marker_index)
+            .ok_or_else(|| {
+                AssetError::InvalidProject(format!(
+                    "internal SC dialogue metadata references missing entry {} marker {}",
+                    entry_id, marker_index
+                ))
+            })?;
+        dialogue.set_roundtrip_metadata_for_build(
+            item.row_joiners,
+            item.generated_marker_count,
+        );
+    }
     Ok(entries)
+}
+
+pub fn dialogue_metadata_companion_path(archive_path: &Path) -> PathBuf {
+    let parent = archive_path.parent().unwrap_or_else(|| Path::new("."));
+    let name = archive_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("sc.cpk");
+    parent.join(format!("{name}{PORTABLE_DIALOGUE_METADATA_SUFFIX}"))
+}
+
+pub fn read_dialogue_metadata_file(
+    path: &Path,
+) -> Result<ScenarioDialogueMetadataDocument, AssetError> {
+    let document: ScenarioDialogueMetadataDocument =
+        serde_json::from_slice(&fs::read(path)?)?;
+    let _ = index_dialogue_metadata_document(&document, &path.display().to_string())?;
+    Ok(document)
+}
+
+pub fn load_portable_dialogue_metadata(
+    archive_path: &Path,
+) -> Result<Option<ScenarioDialogueMetadataDocument>, AssetError> {
+    let path = dialogue_metadata_companion_path(archive_path);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let document = read_dialogue_metadata_file(&path)?;
+    if document.archive_sha256.is_none() {
+        return Err(AssetError::InvalidProject(format!(
+            "portable dialogue metadata companion {} omits archive_sha256",
+            path.display()
+        )));
+    }
+    Ok(Some(document))
+}
+
+pub fn dialogue_metadata_has_entries(document: &ScenarioDialogueMetadataDocument) -> bool {
+    document.entries.iter().any(|entry| !entry.dialogues.is_empty())
+}
+
+fn load_dialogue_metadata_document(
+    project_directory: &Path,
+) -> Result<BTreeMap<(u32, u32), ScenarioDialogueMetadataItem>, AssetError> {
+    let bundle = read_state_bundle_document(project_directory)?;
+    if let Some(document) = bundle.dialogue_metadata.as_ref() {
+        return index_dialogue_metadata_document(
+            document,
+            ".rz-internal/sc-build-state.json.gz dialogue_metadata",
+        );
+    }
+    let legacy_path = project_directory.join(LEGACY_DIALOGUE_METADATA_PATH);
+    if !legacy_path.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let document = read_dialogue_metadata_file(&legacy_path)?;
+    index_dialogue_metadata_document(&document, LEGACY_DIALOGUE_METADATA_PATH)
+}
+
+fn index_dialogue_metadata_document(
+    document: &ScenarioDialogueMetadataDocument,
+    label: &str,
+) -> Result<BTreeMap<(u32, u32), ScenarioDialogueMetadataItem>, AssetError> {
+    if document.document_version != DIALOGUE_DOCUMENT_VERSION
+        || !document.archive.eq_ignore_ascii_case("sc.cpk")
+    {
+        return Err(AssetError::InvalidProject(
+            format!("{label} has an unsupported version or archive identity"),
+        ));
+    }
+    if let Some(digest) = document.archive_sha256.as_deref() {
+        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(AssetError::InvalidProject(format!(
+                "{label} contains an invalid archive_sha256"
+            )));
+        }
+    }
+    let mut out = BTreeMap::new();
+    for entry in &document.entries {
+        for item in &entry.dialogues {
+            if item.row_joiners.iter().any(|joiner| joiner != " " && !joiner.is_empty()) {
+                return Err(AssetError::InvalidProject(format!(
+                    "{label} entry {} marker {} contains an unsupported row joiner; only empty string and single ASCII space are allowed",
+                    entry.entry_id, item.marker_index
+                )));
+            }
+            let marker_index = item.marker_index;
+            if out
+                .insert((entry.entry_id, marker_index), item.clone())
+                .is_some()
+            {
+                return Err(AssetError::InvalidProject(format!(
+                    "{label} contains duplicate entry {} marker {}",
+                    entry.entry_id, marker_index
+                )));
+            }
+        }
+    }
+    Ok(out)
+}
+
+pub fn build_dialogue_metadata_document(
+    entries: &BTreeMap<u32, ScenarioDialogueEntry>,
+    archive_sha256: Option<String>,
+) -> ScenarioDialogueMetadataDocument {
+    let mut metadata_entries = Vec::<ScenarioDialogueMetadataEntry>::new();
+    for (entry_id, entry) in entries {
+        let mut dialogues = Vec::<ScenarioDialogueMetadataItem>::new();
+        for dialogue in &entry.dialogues {
+            let mut joiners = dialogue.row_joiners_for_build();
+            let generated_marker_count = dialogue.generated_marker_count_for_build();
+            let has_semantic_joiner = joiners.iter().any(|joiner| !joiner.is_empty());
+            if generated_marker_count == 0 && !has_semantic_joiner {
+                joiners.clear();
+            }
+            if joiners.is_empty() && generated_marker_count == 0 {
+                continue;
+            }
+            dialogues.push(ScenarioDialogueMetadataItem {
+                marker_index: dialogue.marker_index,
+                row_joiners: joiners,
+                generated_marker_count,
+            });
+        }
+        if !dialogues.is_empty() {
+            metadata_entries.push(ScenarioDialogueMetadataEntry {
+                entry_id: *entry_id,
+                dialogues,
+            });
+        }
+    }
+    ScenarioDialogueMetadataDocument {
+        document_version: DIALOGUE_DOCUMENT_VERSION,
+        archive: "sc.cpk".to_owned(),
+        archive_sha256,
+        entries: metadata_entries,
+    }
 }
 
 fn apply_dialogue_entry(
     source: &mut ScriptSourceDocument,
     edited: &ScenarioDialogueEntry,
+    charset_map: &charset::CharsetMap,
 ) -> Result<(), AssetError> {
     if source.entry_id != edited.entry_id {
         return Err(AssetError::InvalidProject(format!(
@@ -1445,7 +2579,7 @@ fn apply_dialogue_entry(
         .count();
     if by_marker.len() != expected_count {
         return Err(AssetError::InvalidProject(format!(
-            "scenario-dialogue.json entry {} contains {} markers, expected {}",
+            "scenario-dialogue.json entry {} contains {} dialogue markers, expected {}",
             source.entry_id,
             by_marker.len(),
             expected_count
@@ -1460,68 +2594,157 @@ fn apply_dialogue_entry(
         )));
     }
 
-    for node in &mut source.nodes {
-        if let ScriptSourceNode::Text {
-            text_index,
-            grammar,
-            text,
-            source_glyphs,
-            ..
-        } = node
-        {
-            let edit = by_text.remove(text_index).ok_or_else(|| {
-                AssetError::InvalidProject(format!(
-                    "scenario-dialogue.json entry {} omits text record {}",
-                    source.entry_id, text_index
-                ))
-            })?;
-            if edit.grammar != *grammar {
-                return Err(AssetError::InvalidProject(format!(
-                    "scenario-dialogue.json entry {} text record {} changes grammar from {:?} to {:?}",
-                    source.entry_id, text_index, grammar, edit.grammar
-                )));
+    let original_nodes = std::mem::take(&mut source.nodes);
+    let mut rebuilt_nodes = Vec::<ScriptSourceNode>::with_capacity(original_nodes.len());
+    let mut next_marker_index = 0u32;
+    let mut marker_remap = BTreeMap::<u32, u32>::new();
+    let mut node_iter = original_nodes.into_iter().peekable();
+    while let Some(node) = node_iter.next() {
+        match node {
+            ScriptSourceNode::Text {
+                labels,
+                text_index,
+                grammar,
+                prefix_words,
+                mut text,
+                mut source_glyphs,
+                suffix_words,
+            } => {
+                let edit = by_text.remove(&text_index).ok_or_else(|| {
+                    AssetError::InvalidProject(format!(
+                        "scenario-dialogue.json entry {} omits text record {}",
+                        source.entry_id, text_index
+                    ))
+                })?;
+                if edit.grammar != grammar {
+                    return Err(AssetError::InvalidProject(format!(
+                        "scenario-dialogue.json entry {} text record {} changes grammar from {:?} to {:?}",
+                        source.entry_id, text_index, grammar, edit.grammar
+                    )));
+                }
+                if text.as_str() != edit.text.as_str() {
+                    text = edit.text.clone();
+                    source_glyphs.clear();
+                }
+                rebuilt_nodes.push(ScriptSourceNode::Text {
+                    labels,
+                    text_index,
+                    grammar,
+                    prefix_words,
+                    text,
+                    source_glyphs,
+                    suffix_words,
+                });
             }
-            if text.as_str() != edit.text.as_str() {
-                *text = edit.text.clone();
-                source_glyphs.clear();
+            ScriptSourceNode::Dialogue {
+                labels,
+                marker_index,
+                mut speaker,
+                mut speaker_source_glyphs,
+                pages,
+                screen_break_after_pages: preserved_screen_breaks,
+                screen_speaker_refresh_after_pages: preserved_speaker_refreshes,
+            } => {
+                let edit = by_marker.remove(&marker_index).ok_or_else(|| {
+                    AssetError::InvalidProject(format!(
+                        "scenario-dialogue.json entry {} omits marker {}",
+                        source.entry_id, marker_index
+                    ))
+                })?;
+                if speaker.as_str() != edit.speaker.as_str() {
+                    speaker = edit.speaker.clone();
+                    speaker_source_glyphs.clear();
+                }
+                let first_marker_index = next_marker_index;
+                marker_remap.insert(marker_index, first_marker_index);
+                if source_dialogue_matches_edit(edit, &speaker, &pages) {
+                    rebuilt_nodes.push(ScriptSourceNode::Dialogue {
+                        labels,
+                        marker_index: first_marker_index,
+                        speaker,
+                        speaker_source_glyphs,
+                        pages,
+                        screen_break_after_pages: preserved_screen_breaks,
+                        screen_speaker_refresh_after_pages: preserved_speaker_refreshes,
+                    });
+                    next_marker_index = next_marker_index.checked_add(1).ok_or_else(|| {
+                        AssetError::InvalidProject("dialogue marker count overflows".to_owned())
+                    })?;
+                    continue;
+                }
+
+                let screens = edit.engine_screens_for_build();
+                let continuation_invocation = if screens.len() > 1 {
+                    let Some(ScriptSourceNode::Raw { labels: raw_labels, words }) = node_iter.peek() else {
+                        return Err(AssetError::InvalidProject(format!(
+                            "dialogue marker {marker_index} wraps beyond one message entry, but no following VM invocation node is available"
+                        )));
+                    };
+                    Some((raw_labels.clone(), words.clone()))
+                } else {
+                    None
+                };
+
+                for (screen_index, screen_rows) in screens.iter().enumerate() {
+                    let current_marker = next_marker_index;
+                    let mut rebuilt_pages = Vec::with_capacity(screen_rows.len());
+                    for (row_index, text) in screen_rows.iter().enumerate() {
+                        let source_glyphs = if screen_index == 0 {
+                            pages
+                                .get(row_index)
+                                .filter(|page| page.text.as_str() == text.as_str())
+                                .map(|page| page.source_glyphs.clone())
+                                .unwrap_or_default()
+                        } else {
+                            Vec::new()
+                        };
+                        rebuilt_pages.push(ScriptDialoguePage {
+                            text: text.clone(),
+                            source_glyphs,
+                        });
+                    }
+                    rebuilt_nodes.push(ScriptSourceNode::Dialogue {
+                        labels: if screen_index == 0 { labels.clone() } else { Vec::new() },
+                        marker_index: current_marker,
+                        speaker: speaker.clone(),
+                        speaker_source_glyphs: speaker_source_glyphs.clone(),
+                        pages: rebuilt_pages,
+                        screen_break_after_pages: if screen_index == 0 && screens.len() == 1 {
+                            preserved_screen_breaks.clone()
+                        } else {
+                            Vec::new()
+                        },
+                        screen_speaker_refresh_after_pages: if screen_index == 0 && screens.len() == 1 {
+                            preserved_speaker_refreshes.clone()
+                        } else {
+                            Vec::new()
+                        },
+                    });
+                    if let Some((raw_labels, words)) = continuation_invocation.as_ref() {
+                        rebuilt_nodes.push(ScriptSourceNode::Raw {
+                            labels: if screen_index == 0 { raw_labels.clone() } else { Vec::new() },
+                            words: clone_simple_dialogue_invocation(
+                                words,
+                                marker_index,
+                                current_marker,
+                            )?,
+                        });
+                    }
+                    next_marker_index = next_marker_index.checked_add(1).ok_or_else(|| {
+                        AssetError::InvalidProject("dialogue marker count overflows".to_owned())
+                    })?;
+                }
+                if continuation_invocation.is_some() {
+                    let _ = node_iter.next();
+                }
             }
-            continue;
+            ScriptSourceNode::Raw { labels, mut words } => {
+                remap_dialogue_invocation_words(&mut words, &marker_remap)?;
+                rebuilt_nodes.push(ScriptSourceNode::Raw { labels, words });
+            }
         }
-        let ScriptSourceNode::Dialogue {
-            marker_index,
-            speaker,
-            speaker_source_glyphs,
-            pages,
-            ..
-        } = node
-        else {
-            continue;
-        };
-        let edit = by_marker.remove(marker_index).ok_or_else(|| {
-            AssetError::InvalidProject(format!(
-                "scenario-dialogue.json entry {} omits marker {}",
-                source.entry_id, marker_index
-            ))
-        })?;
-        if speaker.as_str() != edit.speaker.as_str() {
-            *speaker = edit.speaker.clone();
-            speaker_source_glyphs.clear();
-        }
-        let old_pages = std::mem::take(pages);
-        let mut rebuilt_pages = Vec::with_capacity(edit.pages.len());
-        for (index, text) in edit.pages.iter().enumerate() {
-            let source_glyphs = old_pages
-                .get(index)
-                .filter(|page| page.text.as_str() == text.as_str())
-                .map(|page| page.source_glyphs.clone())
-                .unwrap_or_default();
-            rebuilt_pages.push(ScriptDialoguePage {
-                text: text.clone(),
-                source_glyphs,
-            });
-        }
-        *pages = rebuilt_pages;
     }
+    source.nodes = rebuilt_nodes;
     if let Some(marker) = by_marker.keys().next() {
         return Err(AssetError::InvalidProject(format!(
             "scenario-dialogue.json entry {} contains unknown marker {}",
@@ -1534,21 +2757,25 @@ fn apply_dialogue_entry(
             source.entry_id, text_index
         )));
     }
-    validate_source_text_coverage(source)?;
+    validate_source_text_coverage(source, charset_map)?;
     Ok(())
 }
-
 fn load_source_for_build(
     path: &Path,
     document: &ScriptDocument,
     dialogue: Option<&ScenarioDialogueEntry>,
+    charset_map: &charset::CharsetMap,
 ) -> Result<ScriptSourceDocument, AssetError> {
     let root = path.parent().unwrap_or_else(|| Path::new("."));
     let mut source: ScriptSourceDocument =
         serde_json::from_slice(&fs::read(root.join(&document.editable))?)?;
     source.secondary_records = document.secondary_records.clone();
+    // Allow stock-extracted SC projects to be rebuilt with an expanded charset
+    // whose first stock glyph IDs remain compatible. Text coverage and glyph
+    // encoding are validated against the build-time charset_map below.
+    source.charset = charset_map.id().to_owned();
     if let Some(dialogue) = dialogue {
-        apply_dialogue_entry(&mut source, dialogue)?;
+        apply_dialogue_entry(&mut source, dialogue, charset_map)?;
     }
     Ok(source)
 }
@@ -1578,7 +2805,7 @@ pub fn inspect_build_with_charset_and_dialogue(
 ) -> Result<ScriptBuildInfo, AssetError> {
     let document: ScriptDocument = serde_json::from_slice(&fs::read(path)?)?;
     validate_document_version(&document)?;
-    let source_document = load_source_for_build(path, &document, dialogue)?;
+    let source_document = load_source_for_build(path, &document, dialogue, charset_map)?;
     inspect_document_source(&document, &source_document, charset_map)
 }
 
@@ -1608,14 +2835,14 @@ fn inspect_document_source(
     source_document: &ScriptSourceDocument,
     charset_map: &charset::CharsetMap,
 ) -> Result<ScriptBuildInfo, AssetError> {
-    validate_source_text_coverage(source_document)?;
+    validate_source_text_coverage(source_document, charset_map)?;
     let (words, secondary) =
         assemble_source_document(document.entry_id, source_document, charset_map)?;
     let stream_table = parse_offset_table(&words_to_bytes(&words)).map_err(|error| {
         AssetError::InvalidProject(format!("relocated script payload is invalid: {error}"))
     })?;
     let primary = derive_primary_offsets(&words)?;
-    let text_ranges = parse_text_ranges(&words, &primary)?;
+    let text_ranges = parse_text_ranges(&words, &primary, charset_map.glyph_count())?;
     validate_text_coverage(
         &words,
         &text_ranges,
@@ -1688,7 +2915,7 @@ pub fn encode_with_allocation_and_charset_and_dialogue(
 ) -> Result<Vec<u8>, AssetError> {
     let document: ScriptDocument = serde_json::from_slice(&fs::read(path)?)?;
     validate_document_version(&document)?;
-    let source_document = load_source_for_build(path, &document, dialogue)?;
+    let source_document = load_source_for_build(path, &document, dialogue, charset_map)?;
     encode_document_source(
         &document,
         &source_document,
@@ -1770,7 +2997,7 @@ fn encode_document_source(
             "script allocation override may expand but may not shrink the extracted allocation".to_owned(),
         ));
     }
-    validate_source_text_coverage(source_document)?;
+    validate_source_text_coverage(source_document, charset_map)?;
     let (words, relocated_secondary) =
         assemble_source_document(document.entry_id, source_document, charset_map)?;
     let metadata = engine_allocations::sc_metadata(document.entry_id);
@@ -1785,7 +3012,7 @@ fn encode_document_source(
         validate_stream_count(&stream_table, metadata, true)?;
     }
     let primary_offsets = derive_primary_offsets(&words)?;
-    let text_ranges = parse_text_ranges(&words, &primary_offsets)?;
+    let text_ranges = parse_text_ranges(&words, &primary_offsets, charset_map.glyph_count())?;
     validate_text_coverage(&words, &text_ranges, usize::try_from(stream_table.table_bytes).unwrap_or(0) / 2)?;
     if !allow_engine_metadata_change {
         validate_primary_count(&primary_offsets, metadata, true)?;
@@ -1882,19 +3109,27 @@ fn compute_sc_integrity_footer(input: &[u8]) -> Result<[u8; SC_INTEGRITY_FOOTER_
     Ok(footer)
 }
 
-fn parse(
-    input: &[u8],
-    entry_id: u32,
-    allocation_size: usize,
-) -> Result<ParsedScript, AssetError> {
-    parse_with_metadata_policy(input, entry_id, allocation_size, true)
-}
-
 fn parse_with_metadata_policy(
     input: &[u8],
     entry_id: u32,
     allocation_size: usize,
     validate_engine_metadata: bool,
+) -> Result<ParsedScript, AssetError> {
+    parse_with_metadata_policy_and_override(
+        input,
+        entry_id,
+        allocation_size,
+        validate_engine_metadata,
+        None,
+    )
+}
+
+fn parse_with_metadata_policy_and_override(
+    input: &[u8],
+    entry_id: u32,
+    allocation_size: usize,
+    validate_engine_metadata: bool,
+    engine_metadata: Option<ScMetadata>,
 ) -> Result<ParsedScript, AssetError> {
     if input.len() > allocation_size {
         return Err(AssetError::InvalidFormat(format!(
@@ -1966,7 +3201,7 @@ fn parse_with_metadata_policy(
         &working[RUNTIME_BASE..SCRIPT_BASE],
         &primary_offsets,
     )?;
-    let metadata = engine_allocations::sc_metadata(entry_id);
+    let metadata = engine_metadata.or_else(|| engine_allocations::sc_metadata(entry_id));
     if validate_engine_metadata {
         validate_stream_count(&stream_table, metadata, false)?;
     }
@@ -2238,6 +3473,7 @@ fn derive_primary_offsets(words: &[u16]) -> Result<Vec<u32>, AssetError> {
 fn parse_text_ranges(
     words: &[u16],
     primary_offsets: &[u32],
+    glyph_limit: usize,
 ) -> Result<Vec<ScriptTextRange>, AssetError> {
     let mut ranges = Vec::with_capacity(primary_offsets.len());
     for (expected_index, &byte_offset) in primary_offsets.iter().enumerate() {
@@ -2262,7 +3498,7 @@ fn parse_text_ranges(
             )))?;
         if words[speaker_start..speaker_end]
             .iter()
-            .any(|value| usize::from(*value) >= charset::GLYPH_COUNT)
+            .any(|value| usize::from(*value) >= glyph_limit)
         {
             return Err(AssetError::InvalidFormat(format!(
                 "primary marker {expected_index} speaker contains a non-glyph word"
@@ -2283,7 +3519,7 @@ fn parse_text_ranges(
             )))?;
         if words[first_page_start..first_page_end]
             .iter()
-            .any(|value| usize::from(*value) >= charset::GLYPH_COUNT)
+            .any(|value| usize::from(*value) >= glyph_limit)
         {
             return Err(AssetError::InvalidFormat(format!(
                 "primary marker {expected_index} first page contains a non-glyph word"
@@ -2294,10 +3530,41 @@ fn parse_text_ranges(
             start: first_page_start,
             end: first_page_end,
         }];
+        let mut screen_break_after_pages = Vec::<u32>::new();
+        let mut screen_speaker_refresh_after_pages = Vec::<u32>::new();
         let mut cursor = first_page_end + 1;
         loop {
+            if cursor < words.len()
+                && words[cursor] == 0xfffb
+                && cursor + 1 < words.len()
+                && (usize::from(words[cursor + 1]) < glyph_limit
+                    || words[cursor + 1] == 0xffff)
+            {
+                let completed_pages = u32::try_from(pages.len()).map_err(|_| {
+                    AssetError::InvalidFormat("script dialogue page count exceeds u32".to_owned())
+                })?;
+                screen_break_after_pages.push(completed_pages);
+                cursor += 1;
+                // Speaker refresh handling: generated VWF continuations repeat the
+                // original speaker after FFFB so the engine redraws the nameplate
+                // on screen 2+.  Treat that repeated span as control metadata, not
+                // user text.  Stock or blank-speaker FFFB continuations without a
+                // refresh remain accepted by falling through to the existing page
+                // parser.
+                if speaker_end > speaker_start {
+                    let speaker_len = speaker_end - speaker_start;
+                    let refresh_end = cursor.saturating_add(speaker_len);
+                    if refresh_end < words.len()
+                        && words[cursor..refresh_end] == words[speaker_start..speaker_end]
+                        && words[refresh_end] == 0xffff
+                    {
+                        screen_speaker_refresh_after_pages.push(completed_pages);
+                        cursor = refresh_end + 1;
+                    }
+                }
+            }
             let page_start = cursor;
-            while cursor < words.len() && usize::from(words[cursor]) < charset::GLYPH_COUNT {
+            while cursor < words.len() && usize::from(words[cursor]) < glyph_limit {
                 cursor += 1;
             }
             if cursor > page_start && cursor < words.len() && words[cursor] == 0xfffe {
@@ -2318,6 +3585,8 @@ fn parse_text_ranges(
             speaker_start,
             speaker_end,
             pages,
+            screen_break_after_pages,
+            screen_speaker_refresh_after_pages,
             end: cursor,
         });
     }
@@ -2381,9 +3650,10 @@ fn validate_source_roundtrip(
     original_words: &[u16],
     original_secondary: &[ScriptSecondaryRecord],
     source: &ScriptSourceDocument,
+    charset_map: &charset::CharsetMap,
 ) -> Result<(), AssetError> {
     let (rebuilt_words, rebuilt_secondary) =
-        assemble_source_document(entry_id, source, charset::default_map())?;
+        assemble_source_document(entry_id, source, charset_map)?;
     if rebuilt_words != original_words {
         let mismatch = rebuilt_words
             .iter()
@@ -2403,15 +3673,19 @@ fn validate_source_roundtrip(
     Ok(())
 }
 
-fn glyph_string_end(words: &[u16], start: usize) -> Option<usize> {
+fn glyph_string_end(words: &[u16], start: usize, glyph_limit: usize) -> Option<usize> {
     let mut cursor = start;
-    while cursor < words.len() && words[cursor] < 0x0e12 {
+    while cursor < words.len() && usize::from(words[cursor]) < glyph_limit {
         cursor += 1;
     }
     (cursor > start && cursor < words.len() && words[cursor] == 0xffff).then_some(cursor)
 }
 
-fn inline_text_at(words: &[u16], opcode_index: usize) -> Option<(ScriptTextGrammar, usize, usize)> {
+fn inline_text_at(
+    words: &[u16],
+    opcode_index: usize,
+    glyph_limit: usize,
+) -> Option<(ScriptTextGrammar, usize, usize)> {
     let opcode = *words.get(opcode_index)?;
     let grammar = match opcode {
         0xff42 => ScriptTextGrammar::InlineFf42,
@@ -2425,7 +3699,7 @@ fn inline_text_at(words: &[u16], opcode_index: usize) -> Option<(ScriptTextGramm
     {
         return None;
     }
-    let terminator = glyph_string_end(words, text_start)?;
+    let terminator = glyph_string_end(words, text_start, glyph_limit)?;
     Some((grammar, text_start, terminator))
 }
 
@@ -2437,8 +3711,9 @@ fn push_text_node(
     prefix_words: Vec<u16>,
     source_glyphs: Vec<u16>,
     suffix_words: Vec<u16>,
+    charset_map: &charset::CharsetMap,
 ) -> Result<(), AssetError> {
-    let text = charset::decode_slice(&source_glyphs)?;
+    let text = charset_map.decode_slice(&source_glyphs)?;
     nodes.push(ScriptSourceNode::Text {
         labels,
         text_index: *text_index,
@@ -2459,10 +3734,11 @@ fn append_non_dialogue_nodes(
     labels: Vec<String>,
     words: &[u16],
     text_index: &mut u32,
+    charset_map: &charset::CharsetMap,
 ) -> Result<(), AssetError> {
     let secondary_target = labels.iter().any(|label| label.starts_with("secondary_"));
     if secondary_target {
-        if let Some(terminator) = glyph_string_end(words, 0) {
+        if let Some(terminator) = glyph_string_end(words, 0, charset_map.glyph_count()) {
             return push_text_node(
                 nodes,
                 labels,
@@ -2471,6 +3747,7 @@ fn append_non_dialogue_nodes(
                 Vec::new(),
                 words[..terminator].to_vec(),
                 words[terminator + 1..].to_vec(),
+                charset_map,
             );
         }
     }
@@ -2479,7 +3756,7 @@ fn append_non_dialogue_nodes(
     let mut pending_labels = Some(labels);
     while cursor < words.len() {
         let found = (cursor..words.len()).find_map(|opcode_index| {
-            inline_text_at(words, opcode_index)
+            inline_text_at(words, opcode_index, charset_map.glyph_count())
                 .map(|(grammar, text_start, terminator)| (opcode_index, grammar, text_start, terminator))
         });
         let Some((opcode_index, grammar, text_start, terminator)) = found else {
@@ -2505,25 +3782,29 @@ fn append_non_dialogue_nodes(
             vec![words[opcode_index]],
             words[text_start..terminator].to_vec(),
             Vec::new(),
+            charset_map,
         )?;
         cursor = terminator + 1;
     }
     Ok(())
 }
 
-fn validate_source_text_coverage(source: &ScriptSourceDocument) -> Result<(), AssetError> {
+fn validate_source_text_coverage(
+    source: &ScriptSourceDocument,
+    charset_map: &charset::CharsetMap,
+) -> Result<(), AssetError> {
     let mut expected_text_index = 0u32;
     for (node_index, node) in source.nodes.iter().enumerate() {
         match node {
             ScriptSourceNode::Raw { labels, words } => {
                 if labels.iter().any(|label| label.starts_with("secondary_"))
-                    && glyph_string_end(words, 0).is_some()
+                    && glyph_string_end(words, 0, charset_map.glyph_count()).is_some()
                 {
                     return Err(AssetError::InvalidFormat(format!(
                         "script node {node_index} leaves a secondary-target string in raw IR; refusing extraction to avoid hidden text loss"
                     )));
                 }
-                if (0..words.len()).any(|index| inline_text_at(words, index).is_some()) {
+                if (0..words.len()).any(|index| inline_text_at(words, index, charset_map.glyph_count()).is_some()) {
                     return Err(AssetError::InvalidFormat(format!(
                         "script node {node_index} leaves a proven FF42/FF8C inline string in raw IR; refusing extraction to avoid hidden text loss"
                     )));
@@ -2544,7 +3825,7 @@ fn validate_source_text_coverage(source: &ScriptSourceDocument) -> Result<(), As
                     )));
                 }
                 if !source_glyphs.is_empty()
-                    && charset::decode_slice(source_glyphs)?.as_str() != text.as_str()
+                    && charset_map.decode_slice(source_glyphs)?.as_str() != text.as_str()
                 {
                     return Err(AssetError::InvalidFormat(format!(
                         "script text record {text_index} does not decode from its source glyph IDs"
@@ -2563,7 +3844,7 @@ fn validate_source_text_coverage(source: &ScriptSourceDocument) -> Result<(), As
                         "script text record {text_index} hides an FFFE dialogue-page terminator in machine suffix words"
                     )));
                 }
-                if (0..suffix_words.len()).any(|index| inline_text_at(suffix_words, index).is_some()) {
+                if (0..suffix_words.len()).any(|index| inline_text_at(suffix_words, index, charset_map.glyph_count()).is_some()) {
                     return Err(AssetError::InvalidFormat(format!(
                         "script text record {text_index} leaves a proven FF42/FF8C inline string in machine suffix words"
                     )));
@@ -2601,6 +3882,7 @@ fn build_source_document(
     stream_table: &ScriptOffsetTableAnnotation,
     primary_offsets: &[u32],
     secondary_records: &[ScriptSecondaryRecord],
+    charset_map: &charset::CharsetMap,
 ) -> Result<ScriptSourceDocument, AssetError> {
     let table_bytes = usize::try_from(stream_table.table_bytes)
         .map_err(|_| AssetError::InvalidFormat("script stream table exceeds usize".to_owned()))?;
@@ -2611,7 +3893,7 @@ fn build_source_document(
         ));
     }
 
-    let text_ranges = parse_text_ranges(words, primary_offsets)?;
+    let text_ranges = parse_text_ranges(words, primary_offsets, charset_map.glyph_count())?;
     validate_text_coverage(words, &text_ranges, table_words)?;
     let mut text_by_start = BTreeMap::<usize, ScriptTextRange>::new();
     let mut boundaries = BTreeSet::<usize>::new();
@@ -2689,7 +3971,7 @@ fn build_source_document(
             nodes.push(ScriptSourceNode::Dialogue {
                 labels: node_labels,
                 marker_index: range.marker_index,
-                speaker: charset::decode_slice(&words[range.speaker_start..range.speaker_end])?,
+                speaker: charset_map.decode_slice(&words[range.speaker_start..range.speaker_end])?,
                 speaker_source_glyphs: words[range.speaker_start..range.speaker_end].to_vec(),
                 pages: range
                     .pages
@@ -2697,11 +3979,13 @@ fn build_source_document(
                     .map(|page| {
                         let source_glyphs = words[page.start..page.end].to_vec();
                         Ok(ScriptDialoguePage {
-                            text: charset::decode_slice(&source_glyphs)?,
+                            text: charset_map.decode_slice(&source_glyphs)?,
                             source_glyphs,
                         })
                     })
                     .collect::<Result<Vec<_>, AssetError>>()?,
+                screen_break_after_pages: range.screen_break_after_pages.clone(),
+                screen_speaker_refresh_after_pages: range.screen_speaker_refresh_after_pages.clone(),
             });
         } else {
             append_non_dialogue_nodes(
@@ -2709,6 +3993,7 @@ fn build_source_document(
                 node_labels,
                 &words[start..end],
                 &mut next_text_index,
+                charset_map,
             )?;
         }
     }
@@ -2721,14 +4006,19 @@ fn build_source_document(
     let source = ScriptSourceDocument {
         document_version: SOURCE_DOCUMENT_VERSION,
         entry_id,
-        charset: "rz-jis-x0208-v1".to_owned(),
+        // Extraction must stamp the recovered IR with the same charset used to
+        // classify glyph words and decode dialogue text.  A previous patch left
+        // this as the stock charset ID, so modified/expanded SC extraction
+        // decoded successfully and then failed its own byte-exact round-trip
+        // check in assemble_source_document().
+        charset: charset_map.id().to_owned(),
         stream_count: u32::try_from(stream_table.entries.len()).unwrap_or(u32::MAX),
         nodes,
         secondary_records: source_secondary,
         relocation_model: "all located VM branch targets are stream IDs; stream offsets and primary marker offsets are directly proven, while corpus-classified secondary payload addresses are regenerated from labels"
             .to_owned(),
     };
-    validate_source_text_coverage(&source)?;
+    validate_source_text_coverage(&source, charset_map)?;
     Ok(source)
 }
 
@@ -2814,6 +4104,8 @@ fn assemble_source_document(
                 speaker,
                 speaker_source_glyphs,
                 pages,
+                screen_break_after_pages,
+                screen_speaker_refresh_after_pages,
                 ..
             } => {
                 if *marker_index != expected_marker {
@@ -2828,22 +4120,47 @@ fn assemble_source_document(
                 words.push(marker);
                 if pages.is_empty() {
                     return Err(AssetError::InvalidProject(format!(
-                        "dialogue marker {marker_index} has no pages"
+                        "dialogue marker {marker_index} has no text"
                     )));
                 }
-                words.extend(encode_span_preserving_source(
+                let speaker_words = encode_span_preserving_source(
                     speaker,
                     speaker_source_glyphs,
                     charset_map,
-                )?);
+                )?;
+                words.extend_from_slice(&speaker_words);
                 words.push(0xffff);
-                for page in pages {
+                let screen_breaks = screen_break_after_pages
+                    .iter()
+                    .copied()
+                    .collect::<BTreeSet<_>>();
+                let speaker_refreshes = screen_speaker_refresh_after_pages
+                    .iter()
+                    .copied()
+                    .collect::<BTreeSet<_>>();
+                for (page_index, page) in pages.iter().enumerate() {
                     words.extend(encode_span_preserving_source(
                         &page.text,
                         &page.source_glyphs,
                         charset_map,
                     )?);
                     words.push(0xfffe);
+                    let completed_pages = u32::try_from(page_index + 1).map_err(|_| {
+                        AssetError::InvalidProject("dialogue page count exceeds u32".to_owned())
+                    })?;
+                    if screen_breaks.contains(&completed_pages) {
+                        words.push(0xfffb);
+                        // Runtime validation showed that FFFB advances to a new
+                        // dialogue screen, but it does not automatically carry the
+                        // nameplate/speaker buffer forward.  Generated VWF
+                        // continuations therefore opt into repeating speaker +
+                        // FFFF on screen 2+.  The explicit set preserves stock
+                        // no-refresh scripts byte-for-byte.
+                        if speaker_refreshes.contains(&completed_pages) {
+                            words.extend_from_slice(&speaker_words);
+                            words.push(0xffff);
+                        }
+                    }
                 }
                 expected_marker = expected_marker.checked_add(1).ok_or_else(|| {
                     AssetError::InvalidProject("dialogue marker count overflows".to_owned())
@@ -3298,7 +4615,7 @@ mod tests {
         ];
         let table = parse_offset_table(&words_to_bytes(&words)).unwrap();
         let offsets = derive_primary_offsets(&words).unwrap();
-        let mut source = build_source_document(7, &words, &table, &offsets, &[]).unwrap();
+        let mut source = build_source_document(7, &words, &table, &offsets, &[], charset::default_map()).unwrap();
         let dialogue = source.nodes.iter_mut().find_map(|node| match node {
             ScriptSourceNode::Dialogue { speaker, pages, .. } => Some((speaker, pages)),
             _ => None,
@@ -3327,7 +4644,7 @@ mod tests {
         ];
         let table = parse_offset_table(&words_to_bytes(&words)).unwrap();
         let offsets = derive_primary_offsets(&words).unwrap();
-        let source = build_source_document(86, &words, &table, &offsets, &[]).unwrap();
+        let source = build_source_document(86, &words, &table, &offsets, &[], charset::default_map()).unwrap();
         let pages = source.nodes.iter().find_map(|node| match node {
             ScriptSourceNode::Dialogue { pages, .. } => Some(pages),
             _ => None,
@@ -3352,7 +4669,7 @@ mod tests {
         ];
         let table = parse_offset_table(&words_to_bytes(&words)).unwrap();
         let offsets = derive_primary_offsets(&words).unwrap();
-        let error = build_source_document(86, &words, &table, &offsets, &[])
+        let error = build_source_document(86, &words, &table, &offsets, &[], charset::default_map())
             .expect_err("residual FFFE must fail closed");
         assert!(error.to_string().contains("hidden text loss"));
     }
@@ -3367,7 +4684,7 @@ mod tests {
         ];
         let table = parse_offset_table(&words_to_bytes(&words)).unwrap();
         let offsets = derive_primary_offsets(&words).unwrap();
-        let source = build_source_document(86, &words, &table, &offsets, &[]).unwrap();
+        let source = build_source_document(86, &words, &table, &offsets, &[], charset::default_map()).unwrap();
         let pages = source.nodes.iter().find_map(|node| match node {
             ScriptSourceNode::Dialogue { pages, .. } => Some(pages),
             _ => None,
@@ -3389,7 +4706,7 @@ mod tests {
         ];
         let table = parse_offset_table(&words_to_bytes(&words)).unwrap();
         let offsets = derive_primary_offsets(&words).unwrap();
-        let source = build_source_document(5, &words, &table, &offsets, &[]).unwrap();
+        let source = build_source_document(5, &words, &table, &offsets, &[], charset::default_map()).unwrap();
         let dialogue = source.nodes.iter().find_map(|node| match node {
             ScriptSourceNode::Dialogue { pages, .. } => Some(pages),
             _ => None,
@@ -3410,7 +4727,7 @@ mod tests {
         let source = ScriptSourceDocument {
             document_version: SOURCE_DOCUMENT_VERSION,
             entry_id: 9,
-            charset: "rz-jis-x0208-v1".to_owned(),
+            charset: charset::default_map().id().to_owned(),
             stream_count: 1,
             nodes: vec![ScriptSourceNode::Raw {
                 labels: vec!["stream_0000".to_owned()],
@@ -3419,7 +4736,7 @@ mod tests {
             secondary_records: Vec::new(),
             relocation_model: String::new(),
         };
-        validate_source_text_coverage(&source).unwrap();
+        validate_source_text_coverage(&source, charset::default_map()).unwrap();
         let (words, secondary) =
             assemble_source_document(9, &source, charset::default_map()).unwrap();
         assert!(secondary.is_empty());
@@ -3431,7 +4748,7 @@ mod tests {
         let source = ScriptSourceDocument {
             document_version: SOURCE_DOCUMENT_VERSION,
             entry_id: 9,
-            charset: "rz-jis-x0208-v1".to_owned(),
+            charset: charset::default_map().id().to_owned(),
             stream_count: 1,
             nodes: vec![ScriptSourceNode::Text {
                 labels: vec![
@@ -3448,7 +4765,7 @@ mod tests {
             secondary_records: Vec::new(),
             relocation_model: String::new(),
         };
-        validate_source_text_coverage(&source).unwrap();
+        validate_source_text_coverage(&source, charset::default_map()).unwrap();
         let (words, secondary) =
             assemble_source_document(9, &source, charset::default_map()).unwrap();
         assert!(secondary.is_empty());
@@ -3460,7 +4777,7 @@ mod tests {
         let source = ScriptSourceDocument {
             document_version: SOURCE_DOCUMENT_VERSION,
             entry_id: 17,
-            charset: "rz-jis-x0208-v1".to_owned(),
+            charset: charset::default_map().id().to_owned(),
             stream_count: 1,
             nodes: vec![ScriptSourceNode::Text {
                 labels: vec![
@@ -3477,7 +4794,7 @@ mod tests {
             secondary_records: Vec::new(),
             relocation_model: String::new(),
         };
-        validate_source_text_coverage(&source).unwrap();
+        validate_source_text_coverage(&source, charset::default_map()).unwrap();
         let (words, secondary) =
             assemble_source_document(17, &source, charset::default_map()).unwrap();
         assert!(secondary.is_empty());
@@ -3516,7 +4833,7 @@ mod tests {
         let source = ScriptSourceDocument {
             document_version: SOURCE_DOCUMENT_VERSION,
             entry_id: 9,
-            charset: "rz-jis-x0208-v1".to_owned(),
+            charset: charset::default_map().id().to_owned(),
             stream_count: 1,
             nodes,
             secondary_records: Vec::new(),
@@ -3563,7 +4880,7 @@ mod tests {
         let source = ScriptSourceDocument {
             document_version: SOURCE_DOCUMENT_VERSION,
             entry_id: 87,
-            charset: "rz-jis-x0208-v1".to_owned(),
+            charset: charset::default_map().id().to_owned(),
             stream_count: 1,
             nodes,
             secondary_records: Vec::new(),
@@ -3593,6 +4910,8 @@ mod tests {
                     text: "ー".to_owned(),
                     source_glyphs: vec![0x001b],
                 }],
+                screen_break_after_pages: Vec::new(),
+                screen_speaker_refresh_after_pages: Vec::new(),
             }],
             secondary_records: Vec::new(),
             relocation_model: "test".to_owned(),
@@ -3605,7 +4924,9 @@ mod tests {
             for forbidden in [
                 "text",
                 "speaker",
+                "speaker_text",
                 "pages",
+                "page_texts",
                 "source_glyphs",
                 "speaker_source_glyphs",
             ] {
@@ -3617,7 +4938,11 @@ mod tests {
             dialogues: vec![ScenarioDialogueItem {
                 marker_index: 0,
                 speaker: "ー".to_owned(),
-                pages: vec!["ー".to_owned()],
+                text: "ー".to_owned(),
+                engine_lines_override: None,
+                engine_screens_override: None,
+                row_joiners_override: None,
+                generated_marker_count_override: None,
             }],
             texts: Vec::new(),
         };
@@ -3644,12 +4969,152 @@ mod tests {
     }
 
     #[test]
+    fn portable_metadata_folds_generated_markers_without_copying_text() {
+        fn dialogue(marker_index: u32) -> ScriptSourceNode {
+            ScriptSourceNode::Dialogue {
+                labels: Vec::new(),
+                marker_index,
+                speaker: "ー".to_owned(),
+                speaker_source_glyphs: vec![0x001b],
+                pages: vec![ScriptDialoguePage {
+                    text: "ー".to_owned(),
+                    source_glyphs: vec![0x001b],
+                }],
+                screen_break_after_pages: Vec::new(),
+                screen_speaker_refresh_after_pages: Vec::new(),
+            }
+        }
+        fn invocation(marker_index: u16) -> ScriptSourceNode {
+            ScriptSourceNode::Raw {
+                labels: Vec::new(),
+                words: vec![0xfffb, 0xff68, marker_index, 2],
+            }
+        }
+        let source = ScriptSourceDocument {
+            document_version: SOURCE_DOCUMENT_VERSION,
+            entry_id: 86,
+            charset: charset::default_map().id().to_owned(),
+            stream_count: 1,
+            nodes: vec![
+                dialogue(0),
+                invocation(0),
+                dialogue(1),
+                invocation(1),
+                dialogue(2),
+                invocation(2),
+                dialogue(3),
+            ],
+            secondary_records: Vec::new(),
+            relocation_model: "test".to_owned(),
+        };
+        let metadata = [(
+            (86, 0),
+            ScenarioDialogueMetadataItem {
+                marker_index: 0,
+                row_joiners: vec![" ".to_owned(), " ".to_owned()],
+                generated_marker_count: 2,
+            },
+        )]
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+        let entry = build_dialogue_entry_from_source(&source, &metadata).unwrap();
+        assert_eq!(entry.dialogues.len(), 2);
+        assert_eq!(entry.dialogues[0].marker_index, 0);
+        assert_eq!(entry.dialogues[0].text, "ー ー ー");
+        assert_eq!(entry.dialogues[0].source_generated_marker_count(), 2);
+        assert_eq!(entry.dialogues[1].marker_index, 1);
+        assert_eq!(entry.dialogues[1].text, "ー");
+    }
+
+    #[test]
+    fn folded_metadata_rehydrates_existing_generated_marker_chain() {
+        fn dialogue(marker_index: u32) -> ScriptMachineNode {
+            ScriptMachineNode::Dialogue {
+                labels: Vec::new(),
+                marker_index,
+                speaker_glyph_aliases: Vec::new(),
+                page_char_counts: vec![1],
+                page_glyph_aliases: vec![Vec::new()],
+                screen_break_after_pages: Vec::new(),
+                screen_speaker_refresh_after_pages: Vec::new(),
+            }
+        }
+        fn invocation(marker_index: u16) -> ScriptMachineNode {
+            ScriptMachineNode::Raw {
+                labels: Vec::new(),
+                words: vec![0xfffb, 0xff68, marker_index, 2],
+            }
+        }
+        let source = ScriptMachineDocument {
+            document_version: SOURCE_DOCUMENT_VERSION,
+            entry_id: 86,
+            stream_count: 1,
+            nodes: vec![
+                dialogue(0),
+                invocation(0),
+                dialogue(1),
+                invocation(1),
+                dialogue(2),
+                invocation(2),
+                dialogue(3),
+            ],
+            relocation_model: "test".to_owned(),
+        };
+        let edited = ScenarioDialogueEntry {
+            entry_id: 86,
+            dialogues: vec![
+                ScenarioDialogueItem {
+                    marker_index: 0,
+                    speaker: "ー".to_owned(),
+                    text: "ー ー ー".to_owned(),
+                    engine_lines_override: None,
+                    engine_screens_override: None,
+                    row_joiners_override: Some(vec![" ".to_owned(), " ".to_owned()]),
+                    generated_marker_count_override: Some(2),
+                },
+                ScenarioDialogueItem {
+                    marker_index: 1,
+                    speaker: "ー".to_owned(),
+                    text: "ー".to_owned(),
+                    engine_lines_override: None,
+                    engine_screens_override: None,
+                    row_joiners_override: Some(Vec::new()),
+                    generated_marker_count_override: Some(0),
+                },
+            ],
+            texts: Vec::new(),
+        };
+        let hydrated = hydrate_machine_source(
+            &source,
+            &edited,
+            &[],
+            charset::default_map(),
+        )
+        .unwrap();
+        let markers = hydrated
+            .nodes
+            .iter()
+            .filter_map(|node| match node {
+                ScriptSourceNode::Dialogue { marker_index, .. } => Some(*marker_index),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(markers, vec![0, 1, 2, 3]);
+        let targets = hydrated
+            .nodes
+            .iter()
+            .filter_map(simple_dialogue_invocation_target)
+            .collect::<Vec<_>>();
+        assert_eq!(targets, vec![0, 1, 2]);
+    }
+
+    #[test]
     fn scenario_navigation_is_startup_first_and_dependency_stable() {
         fn source(entry_id: u32) -> ScriptSourceDocument {
             ScriptSourceDocument {
                 document_version: SOURCE_DOCUMENT_VERSION,
                 entry_id,
-                charset: "rz-jis-x0208-v1".to_owned(),
+                charset: charset::default_map().id().to_owned(),
                 stream_count: 1,
                 nodes: Vec::new(),
                 secondary_records: Vec::new(),
@@ -3718,7 +5183,7 @@ mod tests {
             ScriptSourceDocument {
                 document_version: SOURCE_DOCUMENT_VERSION,
                 entry_id,
-                charset: "rz-jis-x0208-v1".to_owned(),
+                charset: charset::default_map().id().to_owned(),
                 stream_count: 1,
                 nodes: Vec::new(),
                 secondary_records: Vec::new(),

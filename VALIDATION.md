@@ -15,9 +15,9 @@ python tools/validate_engine_assets.py \
 
 The source checks require:
 
-- workspace version `1.0.1` and project schema version `1`;
+- workspace version remains whatever is declared in Cargo.toml; project schema version `1`;
 - `scenario-dialogue.json` as the authoritative SC editing document;
-- one compact machine rebuild bundle at `.rz-internal/sc-state.json.gz`, document version `2`;
+- one compact machine rebuild bundle at `.rz-internal/sc-build-state.json.gz`, document version `1`;
 - no root-level per-entry script IR/state files during normal extraction;
 - no Unicode text, speaker/page strings, or complete source glyph vectors in the machine bundle;
 - only sparse non-canonical glyph aliases are retained for byte-exact no-edit rebuild;
@@ -29,10 +29,10 @@ The source checks require:
   two little-endian wrapping `u64` lane sums seeded with `0x1111111111111111`;
 - the same common-reader footer regeneration in the image-package encoder,
   performed after fixed-allocation padding for ADDPT/BK/BSF/PT;
-- a generic `tools/fix_cpk_integrity.py` repair/check path for archives emitted
+- a generic `tools/cpk_integrity.py` repair/check path for archives emitted
   by older builds with stale image-entry footers;
 - source verification and footer regeneration for standalone `lt.bin`, plus
-  `tools/fix_lt_integrity.py` for files built by older atlas encoders;
+  `tools/lt_integrity.py` for files built by older atlas encoders;
 - source-aware BC encoding, automatic P4/P8 palette rebuild, incremental GZIP
   chunk reuse and rebuilt-package verification;
 - the complete 3,602-codepoint charset table;
@@ -79,12 +79,13 @@ cargo build --release -p rz-tool
 ## Required SC integration matrix
 
 1. Extract stock `sc.cpk` without `--debug-script-ir` and confirm the root
-   contains only `rz-project.json`, `scenario-dialogue.json`,
-   `scenario-routing.json`, `charset.json`, and `.rz-internal/`.
+   contains only `rz-project.json`, `scenario-dialogue.json`, and
+   `.rz-internal/sc-build-state.json.gz`.
 2. Extract with `--debug-script-ir` and confirm diagnostic copies appear only
    under `debug/scenario-ir/`.
-3. Confirm normal extraction produces one `.rz-internal/sc-state.json.gz`
-   bundle and no per-entry IR/state documents.
+3. Confirm normal extraction produces one `.rz-internal/sc-build-state.json.gz`
+   bundle and no root-level routing, charset, allocation-map, dialogue-metadata
+   or per-entry IR/state documents.
 4. Decompress the state bundle and confirm its source nodes contain no `text`,
    `speaker`, `pages`, `source_glyphs`, or `speaker_source_glyphs` fields; only
    sparse `glyph_aliases`/`speaker_glyph_aliases`/`page_glyph_aliases` may refer
@@ -131,3 +132,60 @@ The supplied `lt.bin.org` regression verifies the standalone startup loader:
    in the previous build, so verification fails;
 6. regenerating the footer changes `71` to `80` at offset `0xFD7F0`, verification
    passes, and re-extraction preserves the edited pixel.
+
+## Wrap materialization validation
+
+For VWF text builds, validate that wrapping is serialized, not only computed
+locally. `--eboot-in` must be a standalone VWF-patcher output; stock EBOOT with
+`--charset-map` or `--wrap-width-table` must be rejected before any deployable
+EBOOT is written. The VWF input check is the SHA-256 of virtual range
+`0x81000000..0x81100000`:
+
+```text
+8eac77d2ff46522e7c428bc8231b88b8606a5dc4f2608765955266cf06666ac9
+```
+
+Representative workflow:
+
+```bash
+rz-tool extract sc.cpk.org sc_work --charset-map examples/font.tbl
+# edit scenario-dialogue.json text field
+rz-tool build sc_work sc_rebuilt.cpk \
+  --charset-map examples/font.tbl \
+  --wrap-width-table examples/font.cnf \
+  --wrap-width-px 528 \
+  --wrap-mode word \
+  --eboot-in eboot_vwf.bin.elf \
+  --eboot-out eboot_vwf_sc.bin.elf
+rz-tool extract sc_rebuilt.cpk sc_verify --charset-map examples/font.tbl --debug-script-ir
+```
+
+The verification target is the raw script IR: every generated runtime message
+entry must contain at most three `FFFE`-terminated rows/pages, and overflow must
+appear as generated `FFF0` markers with cloned simple `FFFB FF68 <marker> <arg>`
+invocations. Extra fourth/fifth rows under one marker are invalid because they
+overwrite existing row slots at runtime.
+
+## Continuation metadata validation
+
+1. Build an SC edit that produces at least two generated continuation markers
+   and at least one semantic row joiner.
+2. Confirm build stages both `sc.cpk` and `sc.cpk.rz-dialogue-meta.json`, does
+   not overwrite either path, and rolls back already-renamed outputs when a later
+   in-process rename fails.
+3. Inspect the companion and confirm it contains no dialogue text, row text,
+   speaker text, wrap width, rows-per-screen, pixel metrics, raw words, or debug
+   lines.
+4. Confirm `archive_sha256` equals the rebuilt `sc.cpk` hash.
+5. Re-extract with the companion adjacent to the archive. Confirm generated
+   physical markers fold into one logical marker and later marker indices return
+   to their pre-insertion logical values.
+6. Confirm `.rz-internal/sc-build-state.json.gz` retains only structural
+   dialogue metadata: row joiners and generated-marker counts, never full text.
+7. Rebuild the folded project with the same wrap profile. Confirm no-edit text
+   preserves the physical generated marker chain and changed text safely changes
+   the chain length while remapping later `FF68` references.
+8. Rename or remove the companion and re-extract. Confirm `rz-tool` does not
+   guess continuation relationships from adjacency.
+9. Pair the companion with a different SC archive. Confirm extraction rejects
+   the SHA-256 mismatch before writing the project.
