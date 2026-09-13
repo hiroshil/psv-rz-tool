@@ -1,0 +1,27 @@
+# Canonical PSV RZ VWF font width config.
+# This is a compact width policy, not generated from font.tbl.
+# Each [advance_groups] key is the pixel advance; the value is the glyph set.
+# Tokens: <space>, <upper>, <lower>, <digits>, <vietnamese> are supported,
+# but this canonical file keeps explicit groups for deterministic parity.
+
+[default]
+advance=24
+
+[advance_groups]
+5=!'.:|
+6=,;il
+7=)[]`ìíỉị
+8=<space>"(-IJjÌỈỊ
+9=1rt{}ỆÍ
+10=/EF\fsÈÉẺẼẸÊỄ
+11=?LaczàáảãạăằắẳẵặâẫậĩỂĨ
+12=$+025689<=>PS_degq~ầẩèéẻẽẹêểễệỷỀẾ
+13=*37BKRZ^bhknopuvxyấềếòóỏõọôốổỗộùúủũụỳýỹỵ
+14=4CDHNTYồđẬỘỲÝỶỸỴ
+15=GUVXơờớởỡợẲẴẶẨẪỔỖÙÚỦŨỤ
+16=#AOQÀÁẢÃẠĂẰẮÂẦẤÒÓỎÕỌÔỒỐĐ
+17=&ưừứửữự
+18=M
+19=%@wƠỜỚỞỠỢƯỪỨỬỮỰ
+20=m
+22=W

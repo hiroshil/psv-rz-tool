@@ -1,0 +1,46 @@
+{
+  "status": "PASS",
+  "py_compile": [
+    "rz_vwf_stock_patcher.py",
+    "tools/build_dynamic_lt_from_source.py"
+  ],
+  "public_cli_debug_flags_absent": true,
+  "patcher_version": "v1-stable-mixed-stock-continuation",
+  "patch_only_eboot_sha256": "6597b624915fb45cb1e34b4a9d73a0748452362b5e6e374c75de7b34c7b75be3",
+  "deploy_B_runtime_visual_result": "PASS per tester; B EBOOT includes additional rz-tool SC allocation patch and therefore has a different hash",
+  "runtime_validation": {
+    "deploy_A_cursor_single": "PASS: ラム fixed in direct mixed custom/stock cursor case",
+    "deploy_B_continuation": "PASS: no visible error in continuation/wrap/fold-back case"
+  },
+  "scope": {
+    "patcher_owns": [
+      "VWF EBOOT patches",
+      "LT size/sector profile",
+      "E37E mixed stock/custom cursor helper",
+      "width table"
+    ],
+    "patcher_does_not_own": [
+      "sc.cpk rebuild",
+      "SC allocation table patching",
+      "final LT binary packing when rz-tool LT build path rejects expanded geometry"
+    ]
+  },
+  "release": "v1-stable-mixed-stock-continuation-docs-integrated",
+  "promoted_from": "validated Deploy A/B runtime bundle",
+  "note": "Quick config fix only: examples/font.cnf now contains compact advance-group widths and produces a width table byte-equivalent to the previously validated TBL baseline; version is unchanged.",
+  "docs_policy": {
+    "mixed_stock_vwf_cursor_model": "documented as a first-class README section",
+    "separate_mixed_cursor_note_file_shipped": false,
+    "readme_references_separate_mixed_cursor_note_file": false
+  },
+  "font_config_format": "font.cnf compact [advance_groups] config; bucket/group syntax remains parser-supported for experiments",
+  "font_config": "examples/font.cnf",
+  "font_config_parse_check": {
+    "default_advance": 24,
+    "mapped_char_count": 229,
+    "missing_width_char_count": 0
+  },
+  "width_table_sha256": "4b9956540fb5af2bbe73b195141ebed0b01777acdb32e5da2e9537bd46992d03",
+  "matches_previous_v1_deploy_A_eboot": true,
+  "previous_v1_deploy_A_eboot_sha256": "6597b624915fb45cb1e34b4a9d73a0748452362b5e6e374c75de7b34c7b75be3"
+}

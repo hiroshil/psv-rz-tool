@@ -1,0 +1,14 @@
+{
+  "font_tbl": "examples/font.tbl",
+  "stock_lt_sha256": "a842adbc9e748cc368ac5a580efc01b58e6f7937d7a6949f8cd82e9575bd07b2",
+  "glyph_source_lt_sha256": "37252e39edcc8533134ca43f86d9de34c1ec043c9b8a28a2f0bc52b5dffff803",
+  "output_lt": "<generated>/lt.bin",
+  "output_lt_sha256": "37252e39edcc8533134ca43f86d9de34c1ec043c9b8a28a2f0bc52b5dffff803",
+  "glyph_range_start": "0x0E12",
+  "glyph_range_end_exclusive": "0x0EF7",
+  "runtime_glyph_limit": "0x0F40",
+  "profile_policy": "runtime_limit = align_up(max_custom_glyph_id + 1, 0x40) + 0x40; no CLI override",
+  "lt_size": "0x113000",
+  "lt_sector_count": "0x226",
+  "final_16_bytes": "71f70d807e60ce6c9129df8e1a01f723"
+}

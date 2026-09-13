@@ -1,0 +1,71 @@
+{
+  "status": "PASS",
+  "claim": "v1-stable mixed stock/custom E37E pixel-cursor helper uses an exact font.cnf width config byte-equivalent to the validated TBL baseline",
+  "formula": {
+    "used_end": "max_custom_glyph_id + 1",
+    "runtime_limit": "align_up(used_end, 0x40) + 0x40",
+    "lt_size": "align_up(runtime_limit * 0x120 + 0x3C0, 0x800)"
+  },
+  "current_font_profile": {
+    "glyph_range_start": "0x0E12",
+    "glyph_range_end_exclusive": "0x0EF7",
+    "glyph_runtime_limit": "0x0F40",
+    "custom_glyph_count": 229,
+    "lt_size": "0x113000",
+    "lt_sector_count": "0x226",
+    "runtime_limit_formula": "align_up(glyph_range_end_exclusive, 0x40) + 0x40",
+    "lt_formula": "align_up(glyph_runtime_limit * 0x120 + 0x3C0, 0x800)"
+  },
+  "lt_summary": {
+    "font_tbl": "examples/font.tbl",
+    "stock_lt_sha256": "a842adbc9e748cc368ac5a580efc01b58e6f7937d7a6949f8cd82e9575bd07b2",
+    "glyph_source_lt_sha256": "37252e39edcc8533134ca43f86d9de34c1ec043c9b8a28a2f0bc52b5dffff803",
+    "output_lt": "<generated>/lt.bin",
+    "output_lt_sha256": "37252e39edcc8533134ca43f86d9de34c1ec043c9b8a28a2f0bc52b5dffff803",
+    "glyph_range_start": "0x0E12",
+    "glyph_range_end_exclusive": "0x0EF7",
+    "runtime_glyph_limit": "0x0F40",
+    "profile_policy": "runtime_limit = align_up(max_custom_glyph_id + 1, 0x40) + 0x40; no CLI override",
+    "lt_size": "0x113000",
+    "lt_sector_count": "0x226",
+    "final_16_bytes": "71f70d807e60ce6c9129df8e1a01f723"
+  },
+  "hash_checks": {
+    "eboot_stable_v1": "3c119d0a135f5f2b6ccb64e7bd5b45cc1c1e7cd8e06f9c9166b3bcc5994bb6aa",
+    "eboot_recovered_runtime_good": "3c119d0a135f5f2b6ccb64e7bd5b45cc1c1e7cd8e06f9c9166b3bcc5994bb6aa",
+    "lt_stable_v1": "37252e39edcc8533134ca43f86d9de34c1ec043c9b8a28a2f0bc52b5dffff803",
+    "lt_recovered_runtime_good": "37252e39edcc8533134ca43f86d9de34c1ec043c9b8a28a2f0bc52b5dffff803",
+    "sc_reference_test": "7d71da226c642cd832df694dc54dc672fa74d0f4a795710e99454916d78b280d",
+    "legacy_v1_patch_only": "3c119d0a135f5f2b6ccb64e7bd5b45cc1c1e7cd8e06f9c9166b3bcc5994bb6aa",
+    "eboot_v1_stable_mixed_cursor_patch_only": "6597b624915fb45cb1e34b4a9d73a0748452362b5e6e374c75de7b34c7b75be3",
+    "eboot_deploy_A_cursor_single": "6597b624915fb45cb1e34b4a9d73a0748452362b5e6e374c75de7b34c7b75be3",
+    "eboot_deploy_B_continuation_sc_alloc_patched": "6fb540900117054e231a0d845051fccc9399973b9a56371d7c23c850330bcbd9"
+  },
+  "validations": [
+    "py_compile patcher and LT helper passed",
+    "public CLI has no --runtime-glyph-limit",
+    "font.cnf compact advance-group patcher output matches the validated TBL baseline hash",
+    "LT helper output SHA matches the recovered runtime-good LT",
+    "width table length remains custom visible glyph count only: 229 bytes",
+    "SC allocation is not patched by VWF patcher",
+    "Deploy A cursor-single passed runtime visual validation",
+    "Deploy B continuation/wrap/fold-back passed runtime visual validation",
+    "E37E mixed stock/custom pixel-cursor helper promoted into v1-stable source package"
+  ],
+  "claim_boundary": "Deploy A/B validate the mixed-cursor helper behavior. The bundled font.cnf now preserves the previously validated width table instead of introducing a new bucketed width profile.",
+  "stable_runtime_validation": {
+    "deploy_A_cursor_single": "PASS: ラム no longer blank and no longer pushed to row end after mixed custom VWF glyphs",
+    "deploy_B_continuation": "PASS: no visible error in long continuation/wrap/fold-back test",
+    "promoted_fix": "E37E helper renders stock glyphs below 0x0E12 and custom glyphs below glyph_range_end_exclusive through a single pixel-cursor model",
+    "source_update": "Promoted into v1-stable source; SC allocation remains rz-tool owned"
+  },
+  "font_config_format": "font.cnf compact [advance_groups] config; bucket/group syntax remains parser-supported for experiments",
+  "font_config": "examples/font.cnf compact advance-group widths; byte-equivalent to TBL baseline",
+  "font_config_parse_fix": "literal # in [groups] values remains supported, but the bundled production config no longer relies on group buckets",
+  "hashes": {
+    "eboot_font_cnf_patch_only": "6597b624915fb45cb1e34b4a9d73a0748452362b5e6e374c75de7b34c7b75be3",
+    "width_table_font_cnf": "4b9956540fb5af2bbe73b195141ebed0b01777acdb32e5da2e9537bd46992d03"
+  },
+  "patch_only_eboot_sha256": "6597b624915fb45cb1e34b4a9d73a0748452362b5e6e374c75de7b34c7b75be3",
+  "width_table_sha256": "4b9956540fb5af2bbe73b195141ebed0b01777acdb32e5da2e9537bd46992d03"
+}

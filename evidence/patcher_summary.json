@@ -1,0 +1,113 @@
+{
+  "patcher_version": "v1-stable-mixed-stock-continuation",
+  "input_eboot": "eboot.bin.elf.org",
+  "input_sha256": "f5233a9ed15bedab8893800701a176da07986952fb0fb9ce92b33519327e1825",
+  "output_eboot": "<generated>/eboot_vwf_fontcnf_exact.bin.elf",
+  "output_sha256": "6597b624915fb45cb1e34b4a9d73a0748452362b5e6e374c75de7b34c7b75be3",
+  "font_tbl": "examples/font.tbl",
+  "width_table": "examples/font.cnf",
+  "profile": {
+    "glyph_range_start": "0x0E12",
+    "glyph_range_end_exclusive": "0x0EF7",
+    "glyph_runtime_limit": "0x0F40",
+    "custom_glyph_count": 229,
+    "lt_size": "0x113000",
+    "lt_sector_count": "0x226",
+    "runtime_limit_formula": "align_up(glyph_range_end_exclusive, 0x40) + 0x40",
+    "lt_formula": "align_up(glyph_runtime_limit * 0x120 + 0x3C0, 0x800)"
+  },
+  "width_table_sha256": "4b9956540fb5af2bbe73b195141ebed0b01777acdb32e5da2e9537bd46992d03",
+  "width_summary": {
+    "glyph_count": 229,
+    "default_advance": 24,
+    "missing_glyph_id_count": 0,
+    "missing_glyph_ids_sample": [],
+    "missing_width_char_count": 0,
+    "missing_width_chars_sample": []
+  },
+  "runtime_validation": {
+    "deploy_A_cursor_single": "PASS: mixed custom VWF glyphs followed by stock ラム no longer leave a blank position or push ラム to row end",
+    "deploy_B_continuation": "PASS: long continuation/wrap/fold-back test showed no visible runtime errors",
+    "validated_fix_scope": "E37E mixed stock/custom pixel-cursor model; SC allocation remains rz-tool-owned"
+  },
+  "sc_allocation_policy": "not patched by VWF patcher; rz-tool owns SC allocation during sc.cpk build",
+  "changed_ranges": [
+    {
+      "name": "vm_glyph_limit_main",
+      "va": "0x8100140e",
+      "file_offset": "0x14ee",
+      "length": 4,
+      "sha256": "06f50089c688b09ccde623d524262604f5ea95db408c5603ba6cff110768bc44"
+    },
+    {
+      "name": "glyph_limit_aux",
+      "va": "0x8102d37c",
+      "file_offset": "0x2d45c",
+      "length": 4,
+      "sha256": "9d55702fc26d33b7d13c7ebbf9b9b3a1437c4a8e95287f378b4284c125b2a508"
+    },
+    {
+      "name": "string_raster_glyph_limit",
+      "va": "0x8104dc38",
+      "file_offset": "0x4dd18",
+      "length": 4,
+      "sha256": "06f50089c688b09ccde623d524262604f5ea95db408c5603ba6cff110768bc44"
+    },
+    {
+      "name": "lt_load_size_constant",
+      "va": "0x8101b510",
+      "file_offset": "0x1b5f0",
+      "length": 8,
+      "sha256": "41f04d6458b7b8c566dcd5e89c948fa9c6bfcb2e8c05eafd66a1eae7d08356ab"
+    },
+    {
+      "name": "lt_size_table",
+      "va": "0x81129e5c",
+      "file_offset": "0x129e3c",
+      "length": 4,
+      "sha256": "b5f5ffc59c8cfa91e6af6215256f20199d00e9f9cb4eb78ab2844352f434010c"
+    },
+    {
+      "name": "lt_sector_count_table",
+      "va": "0x81129e60",
+      "file_offset": "0x129e40",
+      "length": 4,
+      "sha256": "5c09817a86d6dce28033e2fa3b6c2d9b292548f8ad06121032a187647eaf1150"
+    },
+    {
+      "name": "e37e_branch_to_helper",
+      "va": "0x8104e37e",
+      "file_offset": "0x4e45e",
+      "length": 4,
+      "sha256": "8cd2ab8e79df08e7696df2078fe7c4c6f78301181ba9f87d88a4bbf1ec85ed72"
+    },
+    {
+      "name": "e37e_vwf_helper_and_signature",
+      "va": "0x8110b036",
+      "file_offset": "0x10b116",
+      "length": 210,
+      "sha256": "6be0df7eab240f72270f6b5958798db140b7143716cab73c1685576d75128ab0"
+    },
+    {
+      "name": "width_table",
+      "va": "0x8112b070",
+      "file_offset": "0x12b050",
+      "length": 229,
+      "sha256": "4b9956540fb5af2bbe73b195141ebed0b01777acdb32e5da2e9537bd46992d03"
+    },
+    {
+      "name": "e240_branch_to_helper",
+      "va": "0x8104e24c",
+      "file_offset": "0x4e32c",
+      "length": 4,
+      "sha256": "8a02d68b98c0eedd0e98614fdc54496971ebfe49b31aed6f078d10568d503c83"
+    },
+    {
+      "name": "e240_helper",
+      "va": "0x8110b150",
+      "file_offset": "0x10b230",
+      "length": 12,
+      "sha256": "b1b207b35a43481f2b23df9d722d20d6890aa5ef415dd83b726cc1b4bc4ac3ac"
+    }
+  ]
+}
