@@ -48,16 +48,26 @@ def main() -> None:
     assert "VWF_RUNTIME_HASH_RANGE_SHA256" in eboot
     assert "0x8100_0000" in eboot
     assert "0x8110_0000" in eboot
-    assert "8eac77d2ff46522e7c428bc8231b88b8606a5dc4f2608765955266cf06666ac9" in eboot
+    assert "c7cc66521264acdc6d259ad189d1a6fe731901855a6708ae3a3b036334091a84" in eboot
     assert "validate_vwf_runtime_patch" in eboot
     assert "require_vwf_runtime" in eboot
-    assert "run the standalone VWF patcher first" in eboot
+    assert "pass -f/--force to continue with this EBOOT" in eboot
+    assert "pub fn patch_lt_elf" in eboot
+    assert "pub fn extract_lt_allocation_map" in eboot
+    assert "LT_LOAD_SIZE_VA" in eboot
+    assert "LT_SIZE_TABLE_VA" in eboot
+    assert "LT_COUNT_TABLE_VA" in eboot
 
     assert "require_vwf_runtime" in pipeline
+    assert "patch_lt_elf" in pipeline
+    assert "decode_with_glyph_count" in pipeline
     assert "load_font_width_config" in pipeline
     assert "strip_font_config_group_comment" in pipeline
     assert ".rz-internal/sc-build-state.json.gz" in pipeline
     assert ".rz-internal/sc-build-state.json.gz" in main_rs
+    assert '"extract-sc-alloc"' in main_rs
+    assert '"extract-lt-alloc"' in main_rs
+    assert '"-f" | "--force"' in main_rs
 
     legacy_width_name = "fonttbl_width" + "_buckets.tbl"
     assert (ROOT / "examples/font.cnf").exists()
@@ -77,7 +87,11 @@ def main() -> None:
     assert validation["vwf_eboot_input_contract"]["stock_eboot_with_vwf_wrap_must_reject"] is True
     assert validation["vwf_eboot_input_contract"]["standalone_vwf_patcher_output_required_for_charset_or_wrap"] is True
     assert validation["vwf_eboot_input_contract"]["runtime_hash_range_va"] == "0x81000000..0x81100000"
-    assert validation["vwf_eboot_input_contract"]["runtime_hash_range_sha256"] == "8eac77d2ff46522e7c428bc8231b88b8606a5dc4f2608765955266cf06666ac9"
+    assert validation["vwf_eboot_input_contract"]["runtime_hash_range_sha256"] == "c7cc66521264acdc6d259ad189d1a6fe731901855a6708ae3a3b036334091a84"
+    assert validation["vwf_eboot_input_contract"]["force_allows_runtime_hash_mismatch"] is True
+    assert validation["vwf_eboot_input_contract"]["allocation_extract_commands"] == ["extract-sc-alloc", "extract-lt-alloc"]
+    assert "lt_allocation_size" in validation["vwf_eboot_input_contract"]["rz_tool_eboot_patch_scope"]
+    assert "lt_sector_count" in validation["vwf_eboot_input_contract"]["rz_tool_eboot_patch_scope"]
 
     docs = "\n".join(read(name) for name in ["README.md", "ENGINE_ANALYSIS.md", "VALIDATION.md"])
     forbidden_doc_markers = [

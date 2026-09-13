@@ -13,7 +13,7 @@ use cri_archive_lib::cpk::writer::{
 };
 
 use crate::codec::{self, DecodeContext};
-use crate::eboot::{self, EbootPatchReport, ScEntryPatch, ScPatchPlan, SC_ENTRY_COUNT};
+use crate::eboot::{self, EbootPatchReport, LtEbootPatchReport, LtPatchPlan, ScEntryPatch, ScPatchPlan, SC_ENTRY_COUNT};
 use crate::engine_allocations;
 use crate::error::AssetError;
 use crate::manifest::{
@@ -54,6 +54,7 @@ impl Default for WrapMode {
 pub struct BuildOptions {
     pub eboot_in: Option<PathBuf>,
     pub eboot_out: Option<PathBuf>,
+    pub force: bool,
     pub charset_map: Option<PathBuf>,
     pub wrap_width_px: Option<u32>,
     pub wrap_width_table: Option<PathBuf>,
@@ -77,11 +78,13 @@ pub struct BuildReport {
     pub files: u32,
     pub output_size: u64,
     pub eboot_patch: Option<EbootPatchReport>,
+    pub lt_eboot_patch: Option<LtEbootPatchReport>,
 }
 
 struct BuildOutcome {
     report: BuildReport,
     sc_patch_plan: Option<ScPatchPlan>,
+    lt_patch_plan: Option<LtPatchPlan>,
     portable_dialogue_metadata: Option<codec::script::ScenarioDialogueMetadataDocument>,
 }
 
@@ -100,6 +103,49 @@ struct ScAllocationMapEntryFile {
     primary_count: Option<u16>,
     secondary_base: Option<u16>,
     secondary_count: Option<u16>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LtAllocationMapFile {
+    format: String,
+    version: u32,
+    glyph_count: u32,
+    allocation_size: usize,
+    sector_count: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LtExtractAllocation {
+    glyph_count: usize,
+    allocation_size: usize,
+}
+
+fn load_lt_allocation_map(path: &Path) -> Result<LtExtractAllocation, AssetError> {
+    let document: LtAllocationMapFile = serde_json::from_slice(&fs::read(path)?)?;
+    if document.format != "rz-lt-allocation-map" || document.version != 1 {
+        return Err(AssetError::InvalidProject(
+            "LT allocation map must use format=rz-lt-allocation-map version=1".to_owned(),
+        ));
+    }
+    let glyph_count = usize::try_from(document.glyph_count).map_err(|_| {
+        AssetError::InvalidProject("LT allocation map glyph_count exceeds usize".to_owned())
+    })?;
+    let sector_count = usize::try_from(document.sector_count).map_err(|_| {
+        AssetError::InvalidProject("LT allocation map sector_count exceeds usize".to_owned())
+    })?;
+    let sector_bytes = sector_count.checked_mul(engine_allocations::SECTOR_SIZE).ok_or_else(|| {
+        AssetError::InvalidProject("LT allocation map sector size overflows usize".to_owned())
+    })?;
+    if sector_bytes != document.allocation_size {
+        return Err(AssetError::InvalidProject(format!(
+            "LT allocation map sector_count {:#x} allocates {sector_bytes:#x} bytes, but allocation_size is {:#x}",
+            document.sector_count, document.allocation_size
+        )));
+    }
+    Ok(LtExtractAllocation {
+        glyph_count,
+        allocation_size: document.allocation_size,
+    })
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -290,8 +336,24 @@ fn extract_to_stage(
     }
 
     if lower == "lt.bin" {
+        if options.charset_map.is_some() || options.debug_script_ir || options.use_stock_charset || options.use_stock_allocation {
+            return Err(AssetError::InvalidProject(
+                "charset/script/--use-stock-allocation extraction options are not valid for lt.bin".to_owned(),
+            ));
+        }
         let bytes = fs::read(input)?;
-        let document = codec::lt_font::decode(&bytes, stage)?;
+        let document = if let Some(path) = options.allocation_map.as_ref() {
+            let allocation = load_lt_allocation_map(path)?;
+            if bytes.len() != allocation.allocation_size {
+                return Err(AssetError::InvalidProject(format!(
+                    "lt.bin is {:#x} bytes, but LT allocation map requires {:#x} bytes",
+                    bytes.len(), allocation.allocation_size
+                )));
+            }
+            codec::lt_font::decode_with_glyph_count(&bytes, stage, allocation.glyph_count)?
+        } else {
+            codec::lt_font::decode(&bytes, stage)?
+        };
         write_manifest(
             stage,
             &ProjectManifest {
@@ -1178,37 +1240,51 @@ pub fn build_project(
                 &options,
             ),
             ProjectSource::LtFont { document } => {
-                if options.eboot_in.is_some()
-                    || options.charset_map.is_some()
+                if options.charset_map.is_some()
                     || options.wrap_width_px.is_some()
                     || options.wrap_width_table.is_some()
                     || options.wrap_rows.is_some()
+                    || options.wrap_mode.is_some()
                 {
                     return Err(AssetError::InvalidProject(
-                        "--eboot-in/--eboot-out/--charset-map/wrap options are valid only when building sc.cpk".to_owned(),
+                        "--charset-map/wrap options are valid only when building sc.cpk".to_owned(),
                     ));
                 }
-                let bytes = codec::lt_font::encode(&project_directory.join(document))?;
+                if options.eboot_in.is_none() || options.eboot_out.is_none() {
+                    return Err(AssetError::InvalidProject(
+                        "building editable lt.bin requires --eboot-in <eboot.bin.elf> and --eboot-out <patched.bin.elf> so rz-tool can update LT allocation".to_owned(),
+                    ));
+                }
+                let document_path = project_directory.join(document);
+                let bytes = codec::lt_font::encode(&document_path)?;
+                let glyph_count = codec::lt_font::document_glyph_count(&document_path)?;
                 fs::write(&staged_output, &bytes)?;
                 Ok(BuildOutcome {
                     report: BuildReport {
                         files: 1,
                         output_size: u64::try_from(bytes.len()).unwrap(),
                         eboot_patch: None,
+                        lt_eboot_patch: None,
                     },
                     sc_patch_plan: None,
+                    lt_patch_plan: Some(LtPatchPlan {
+                        glyph_count,
+                        allocation_size: bytes.len(),
+                    }),
                     portable_dialogue_metadata: None,
                 })
             }
             ProjectSource::RawFile { path } => {
                 if options.eboot_in.is_some()
+                    || options.force
                     || options.charset_map.is_some()
                     || options.wrap_width_px.is_some()
                     || options.wrap_width_table.is_some()
                     || options.wrap_rows.is_some()
+                    || options.wrap_mode.is_some()
                 {
                     return Err(AssetError::InvalidProject(
-                        "--eboot-in/--eboot-out/--charset-map/wrap options are valid only when building sc.cpk".to_owned(),
+                        "--eboot-in/--eboot-out/-f/--charset-map/wrap options are valid only when building editable sc.cpk or lt.bin".to_owned(),
                     ));
                 }
                 let bytes = fs::read(project_directory.join(path))?;
@@ -1218,8 +1294,10 @@ pub fn build_project(
                         files: 1,
                         output_size: u64::try_from(bytes.len()).unwrap(),
                         eboot_patch: None,
+                        lt_eboot_patch: None,
                     },
                     sc_patch_plan: None,
+                    lt_patch_plan: None,
                     portable_dialogue_metadata: None,
                 })
             }
@@ -1246,6 +1324,7 @@ pub fn build_project(
                         &stage_eboot,
                         plan,
                         require_vwf_runtime,
+                        options.force,
                     ) {
                         Ok(report) => report,
                         Err(error) => {
@@ -1263,15 +1342,41 @@ pub fn build_project(
                             .to_owned(),
                     ));
                 }
+            } else if let Some(plan) = outcome.lt_patch_plan {
+                let (input, output_eboot) = match (options.eboot_in.as_ref(), options.eboot_out.as_ref()) {
+                    (Some(input), Some(output_eboot)) => (input, output_eboot),
+                    _ => {
+                        let _ = fs::remove_file(&staged_output);
+                        return Err(AssetError::InvalidProject(
+                            "building editable lt.bin requires --eboot-in and --eboot-out".to_owned(),
+                        ));
+                    }
+                };
+                let stage_eboot = build_staging_file(output_eboot);
+                if stage_eboot.exists() {
+                    fs::remove_file(&stage_eboot)?;
+                }
+                let patch_report = match eboot::patch_lt_elf(input, &stage_eboot, plan, options.force) {
+                    Ok(report) => report,
+                    Err(error) => {
+                        let _ = fs::remove_file(&staged_output);
+                        let _ = fs::remove_file(&stage_eboot);
+                        return Err(error);
+                    }
+                };
+                outcome.report.lt_eboot_patch = Some(patch_report);
+                staged_eboot = Some(stage_eboot);
             } else if options.eboot_in.is_some()
+                || options.force
                 || options.charset_map.is_some()
                 || options.wrap_width_px.is_some()
                 || options.wrap_width_table.is_some()
                 || options.wrap_rows.is_some()
+                || options.wrap_mode.is_some()
             {
                 let _ = fs::remove_file(&staged_output);
                 return Err(AssetError::InvalidProject(
-                    "--eboot-in/--eboot-out/--charset-map/wrap options are valid only for an editable sc.cpk project".to_owned(),
+                    "--eboot-in/--eboot-out/-f/--charset-map/wrap options are valid only for editable sc.cpk or lt.bin projects".to_owned(),
                 ));
             }
 
@@ -1600,8 +1705,10 @@ fn build_cpk(
             files: report.files,
             output_size: report.archive_size,
             eboot_patch: None,
+            lt_eboot_patch: None,
         },
         sc_patch_plan: is_sc.then_some(ScPatchPlan { entries: sc_entries }),
+        lt_patch_plan: None,
         portable_dialogue_metadata,
     })
 }

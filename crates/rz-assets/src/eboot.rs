@@ -5,6 +5,18 @@ use crate::engine_allocations::{SC_METADATA, SC_SECTORS, SECTOR_SIZE};
 use crate::error::AssetError;
 
 pub const SC_ENTRY_COUNT: usize = 89;
+pub const LT_STOCK_GLYPH_COUNT: u32 = 0x0e12;
+const LT_GLYPH_BYTES: u32 = 0x120;
+const LT_LOAD_SIZE_VA: u32 = 0x8101_b510;
+const LT_SIZE_TABLE_VA: u32 = 0x8112_9e5c;
+const LT_COUNT_TABLE_VA: u32 = 0x8112_9e60;
+const LT_STOCK_ALLOCATION_SIZE: u32 = 0x000f_d800;
+const LT_STOCK_SECTOR_COUNT: u32 = 0x01fb;
+const LT_RUNTIME_GLYPH_LIMIT_SITES: &[(u32, u8)] = &[
+    (0x8100_140e, 0),
+    (0x8102_d37c, 1),
+    (0x8104_dc38, 0),
+];
 const SC_SECTOR_TABLE_VA: u32 = 0x8111_344c;
 const SC_METADATA_TABLE_VA: u32 = 0x810f_9b1c;
 const SC_BUFFER_MOV_VA: u32 = 0x8101_b554;
@@ -13,7 +25,7 @@ const VWF_RUNTIME_HASH_RANGE_END_VA: u32 = 0x8110_0000;
 const VWF_RUNTIME_HASH_RANGE_SIZE: usize =
     (VWF_RUNTIME_HASH_RANGE_END_VA - VWF_RUNTIME_HASH_RANGE_START_VA) as usize;
 const VWF_RUNTIME_HASH_RANGE_SHA256: &str =
-    "8eac77d2ff46522e7c428bc8231b88b8606a5dc4f2608765955266cf06666ac9";
+    "c7cc66521264acdc6d259ad189d1a6fe731901855a6708ae3a3b036334091a84";
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ScEntryPatch {
@@ -33,6 +45,22 @@ pub struct EbootPatchReport {
     pub changed: bool,
     pub script_buffer_size: u32,
     pub total_sectors: u16,
+    pub forced_runtime_hash_mismatch: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LtPatchPlan {
+    pub glyph_count: u32,
+    pub allocation_size: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LtEbootPatchReport {
+    pub changed: bool,
+    pub glyph_count: u32,
+    pub allocation_size: u32,
+    pub sector_count: u32,
+    pub forced_runtime_hash_mismatch: bool,
 }
 
 impl ScPatchPlan {
@@ -78,6 +106,22 @@ pub struct ScAllocationEntry {
     pub primary_count: u16,
     pub secondary_base: u16,
     pub secondary_count: u16,
+    pub patched: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LtAllocationMapDocument {
+    pub format: String,
+    pub version: u32,
+    pub source_eboot_sha256: String,
+    pub glyph_count: u32,
+    pub glyph_count_hex: String,
+    pub allocation_size: usize,
+    pub allocation_size_hex: String,
+    pub sector_count: u32,
+    pub stock_glyph_count: u32,
+    pub stock_allocation_size: usize,
+    pub stock_sector_count: u32,
     pub patched: bool,
 }
 
@@ -135,6 +179,39 @@ pub fn extract_sc_allocation_map(input: &Path) -> Result<ScAllocationMapDocument
     })
 }
 
+pub fn extract_lt_allocation_map(input: &Path) -> Result<LtAllocationMapDocument, AssetError> {
+    let bytes = fs::read(input)?;
+    let elf = Elf32View::parse(&bytes)?;
+    let glyph_count = read_lt_runtime_glyph_limit(&elf, &bytes)?;
+    let (allocation_size, sector_count) = read_lt_allocation(&elf, &bytes)?;
+    let glyph_bytes = glyph_count.checked_mul(LT_GLYPH_BYTES).ok_or_else(|| {
+        AssetError::InvalidProject("EBOOT LT runtime glyph byte span overflows u32".to_owned())
+    })?;
+    if glyph_bytes > allocation_size {
+        return Err(AssetError::InvalidProject(format!(
+            "EBOOT LT runtime glyph limit {glyph_count:#x} requires at least {glyph_bytes:#x} glyph bytes, but allocation is only {allocation_size:#x}; build lt.bin with rz-tool before extracting its allocation map"
+        )));
+    }
+    Ok(LtAllocationMapDocument {
+        format: "rz-lt-allocation-map".to_owned(),
+        version: 1,
+        source_eboot_sha256: sha256_hex(&bytes),
+        glyph_count,
+        glyph_count_hex: format!("{glyph_count:#x}"),
+        allocation_size: usize::try_from(allocation_size).map_err(|_| {
+            AssetError::InvalidProject("LT allocation size exceeds usize".to_owned())
+        })?,
+        allocation_size_hex: format!("{allocation_size:#x}"),
+        sector_count,
+        stock_glyph_count: LT_STOCK_GLYPH_COUNT,
+        stock_allocation_size: LT_STOCK_ALLOCATION_SIZE as usize,
+        stock_sector_count: LT_STOCK_SECTOR_COUNT,
+        patched: glyph_count != LT_STOCK_GLYPH_COUNT
+            || allocation_size != LT_STOCK_ALLOCATION_SIZE
+            || sector_count != LT_STOCK_SECTOR_COUNT,
+    })
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -147,6 +224,7 @@ pub fn patch_sc_elf(
     output: &Path,
     plan: &ScPatchPlan,
     require_vwf_runtime: bool,
+    force: bool,
 ) -> Result<EbootPatchReport, AssetError> {
     let mut bytes = fs::read(input)?;
     let elf = Elf32View::parse(&bytes)?;
@@ -161,9 +239,11 @@ pub fn patch_sc_elf(
             "eboot instruction at {SC_BUFFER_MOV_VA:#010x} is not a supported `movs.w r0, #power_of_two` signature"
         ))
     })?;
-    if require_vwf_runtime {
-        validate_vwf_runtime_patch(&elf, &bytes)?;
-    }
+    let forced_runtime_hash_mismatch = if require_vwf_runtime {
+        validate_vwf_runtime_patch(&elf, &bytes, force)?
+    } else {
+        false
+    };
 
     let mut start_sector = 0u32;
     for (index, entry) in plan.entries.iter().enumerate() {
@@ -235,6 +315,70 @@ pub fn patch_sc_elf(
         changed: plan.differs_from_stock() || current_buffer != required_buffer_u32,
         script_buffer_size: required_buffer_u32,
         total_sectors: start_sector as u16,
+        forced_runtime_hash_mismatch,
+    })
+}
+
+pub fn patch_lt_elf(
+    input: &Path,
+    output: &Path,
+    plan: LtPatchPlan,
+    force: bool,
+) -> Result<LtEbootPatchReport, AssetError> {
+    let mut bytes = fs::read(input)?;
+    let elf = Elf32View::parse(&bytes)?;
+    let forced_runtime_hash_mismatch = validate_vwf_runtime_patch(&elf, &bytes, force)?;
+    let runtime_glyph_limit = read_lt_runtime_glyph_limit(&elf, &bytes)?;
+    if runtime_glyph_limit != plan.glyph_count {
+        return Err(AssetError::InvalidProject(format!(
+            "lt.bin project glyph_count {:#x} does not match EBOOT runtime glyph limit {runtime_glyph_limit:#x}; rebuild the VWF EBOOT with the matching font.tbl before building lt.bin",
+            plan.glyph_count
+        )));
+    }
+    if plan.allocation_size == 0 || plan.allocation_size % SECTOR_SIZE != 0 {
+        return Err(AssetError::InvalidProject(format!(
+            "rebuilt lt.bin allocation size {:#x} is not a non-zero {SECTOR_SIZE:#x}-byte sector multiple",
+            plan.allocation_size
+        )));
+    }
+    let allocation_size = u32::try_from(plan.allocation_size).map_err(|_| {
+        AssetError::InvalidProject("rebuilt lt.bin allocation size exceeds u32".to_owned())
+    })?;
+    let glyph_bytes = plan.glyph_count.checked_mul(LT_GLYPH_BYTES).ok_or_else(|| {
+        AssetError::InvalidProject("rebuilt lt.bin runtime glyph byte span overflows u32".to_owned())
+    })?;
+    if glyph_bytes > allocation_size {
+        return Err(AssetError::InvalidProject(format!(
+            "rebuilt lt.bin allocation {allocation_size:#x} is smaller than runtime glyph span {glyph_bytes:#x} for glyph_count {:#x}",
+            plan.glyph_count
+        )));
+    }
+    let sector_count = u32::try_from(plan.allocation_size / SECTOR_SIZE).map_err(|_| {
+        AssetError::InvalidProject("rebuilt lt.bin sector count exceeds u32".to_owned())
+    })?;
+    let (current_size, current_sectors) = read_lt_allocation(&elf, &bytes)?;
+    let changed = current_size != allocation_size || current_sectors != sector_count;
+
+    if changed {
+        let load_offset = elf.virtual_to_file_offset(LT_LOAD_SIZE_VA, 8)?;
+        let low = u16::try_from(allocation_size & 0xffff).unwrap();
+        let high = u16::try_from(allocation_size >> 16).unwrap();
+        bytes[load_offset..load_offset + 4].copy_from_slice(&encode_thumb_mov_imm16(0xf240, 0, low));
+        bytes[load_offset + 4..load_offset + 8].copy_from_slice(&encode_thumb_mov_imm16(0xf2c0, 0, high));
+
+        let size_offset = elf.virtual_to_file_offset(LT_SIZE_TABLE_VA, 4)?;
+        let count_offset = elf.virtual_to_file_offset(LT_COUNT_TABLE_VA, 4)?;
+        bytes[size_offset..size_offset + 4].copy_from_slice(&allocation_size.to_le_bytes());
+        bytes[count_offset..count_offset + 4].copy_from_slice(&sector_count.to_le_bytes());
+    }
+
+    fs::write(output, &bytes)?;
+    Ok(LtEbootPatchReport {
+        changed,
+        glyph_count: plan.glyph_count,
+        allocation_size,
+        sector_count,
+        forced_runtime_hash_mismatch,
     })
 }
 
@@ -242,7 +386,11 @@ fn write_u16(bytes: &mut [u8], offset: usize, value: u16) {
     bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
 }
 
-fn validate_vwf_runtime_patch(elf: &Elf32View, bytes: &[u8]) -> Result<(), AssetError> {
+fn validate_vwf_runtime_patch(
+    elf: &Elf32View,
+    bytes: &[u8],
+    force: bool,
+) -> Result<bool, AssetError> {
     let range_offset = elf.virtual_to_file_offset(
         VWF_RUNTIME_HASH_RANGE_START_VA,
         VWF_RUNTIME_HASH_RANGE_SIZE,
@@ -250,15 +398,110 @@ fn validate_vwf_runtime_patch(elf: &Elf32View, bytes: &[u8]) -> Result<(), Asset
     let range = &bytes[range_offset..range_offset + VWF_RUNTIME_HASH_RANGE_SIZE];
     let actual = sha256_hex(range);
     if actual != VWF_RUNTIME_HASH_RANGE_SHA256 {
+        if force {
+            return Ok(true);
+        }
         return Err(AssetError::InvalidProject(format!(
-            "--eboot-in VWF runtime hash mismatch for virtual range {:#010x}..{:#010x}: expected {}, got {}; run the standalone VWF patcher first, then pass that patched eboot to rz-tool for SC allocation patching",
+            "--eboot-in VWF runtime hash mismatch for virtual range {:#010x}..{:#010x}: expected {}, got {}; pass -f/--force to continue with this EBOOT",
             VWF_RUNTIME_HASH_RANGE_START_VA,
             VWF_RUNTIME_HASH_RANGE_END_VA,
             VWF_RUNTIME_HASH_RANGE_SHA256,
             actual
         )));
     }
-    Ok(())
+    Ok(false)
+}
+
+fn read_lt_runtime_glyph_limit(elf: &Elf32View, bytes: &[u8]) -> Result<u32, AssetError> {
+    let mut decoded = None::<u32>;
+    for &(va, register) in LT_RUNTIME_GLYPH_LIMIT_SITES {
+        let offset = elf.virtual_to_file_offset(va, 4)?;
+        let value = decode_thumb_mov_imm16(&bytes[offset..offset + 4], 0xf240, register)
+            .ok_or_else(|| {
+                AssetError::InvalidProject(format!(
+                    "EBOOT LT runtime glyph-limit instruction at {va:#010x} is not a supported Thumb MOVW r{register}, #imm16"
+                ))
+            })?;
+        let value = u32::from(value);
+        if let Some(expected) = decoded {
+            if value != expected {
+                return Err(AssetError::InvalidProject(format!(
+                    "EBOOT LT runtime glyph-limit sites disagree: expected {expected:#x}, found {value:#x} at {va:#010x}"
+                )));
+            }
+        } else {
+            decoded = Some(value);
+        }
+    }
+    decoded.ok_or_else(|| AssetError::InvalidProject("EBOOT has no LT runtime glyph-limit sites".to_owned()))
+}
+
+fn read_lt_allocation(elf: &Elf32View, bytes: &[u8]) -> Result<(u32, u32), AssetError> {
+    let load_offset = elf.virtual_to_file_offset(LT_LOAD_SIZE_VA, 8)?;
+    let load_bytes = &bytes[load_offset..load_offset + 8];
+    let load_size = if load_bytes == &[0x5f, 0xf4, 0x58, 0x40, 0xc0, 0xf2, 0x0f, 0x00] {
+        LT_STOCK_ALLOCATION_SIZE
+    } else {
+        let low = decode_thumb_mov_imm16(&load_bytes[..4], 0xf240, 0).ok_or_else(|| {
+            AssetError::InvalidProject(format!(
+                "EBOOT LT allocation instruction at {LT_LOAD_SIZE_VA:#010x} is not the stock MOVS.W form or a supported MOVW r0, #imm16"
+            ))
+        })?;
+        let high = decode_thumb_mov_imm16(&load_bytes[4..], 0xf2c0, 0).ok_or_else(|| {
+            AssetError::InvalidProject(format!(
+                "EBOOT LT allocation high-half instruction at {:#010x} is not a supported MOVT r0, #imm16",
+                LT_LOAD_SIZE_VA + 4
+            ))
+        })?;
+        u32::from(low) | (u32::from(high) << 16)
+    };
+    let size_offset = elf.virtual_to_file_offset(LT_SIZE_TABLE_VA, 4)?;
+    let count_offset = elf.virtual_to_file_offset(LT_COUNT_TABLE_VA, 4)?;
+    let table_size = read_u32(bytes, size_offset)?;
+    let sector_count = read_u32(bytes, count_offset)?;
+    if load_size != table_size {
+        return Err(AssetError::InvalidProject(format!(
+            "EBOOT LT allocation constants disagree: loader={load_size:#x}, table={table_size:#x}"
+        )));
+    }
+    let sector_size = u32::try_from(SECTOR_SIZE).unwrap();
+    let sector_bytes = sector_count.checked_mul(sector_size).ok_or_else(|| {
+        AssetError::InvalidProject("EBOOT LT sector allocation overflows u32".to_owned())
+    })?;
+    if sector_bytes != table_size {
+        return Err(AssetError::InvalidProject(format!(
+            "EBOOT LT sector count {sector_count:#x} allocates {sector_bytes:#x} bytes, but LT size table is {table_size:#x}"
+        )));
+    }
+    Ok((table_size, sector_count))
+}
+
+fn decode_thumb_mov_imm16(bytes: &[u8], base: u16, register: u8) -> Option<u16> {
+    if bytes.len() != 4 || register > 15 {
+        return None;
+    }
+    let first = u16::from_le_bytes([bytes[0], bytes[1]]);
+    let second = u16::from_le_bytes([bytes[2], bytes[3]]);
+    if first & 0xfbf0 != base || ((second >> 8) & 0x0f) != u16::from(register) {
+        return None;
+    }
+    let imm4 = first & 0x000f;
+    let i = (first >> 10) & 1;
+    let imm3 = (second >> 12) & 0x0007;
+    let imm8 = second & 0x00ff;
+    Some((imm4 << 12) | (i << 11) | (imm3 << 8) | imm8)
+}
+
+fn encode_thumb_mov_imm16(base: u16, register: u8, immediate: u16) -> [u8; 4] {
+    let first = base
+        | ((immediate >> 12) & 0x000f)
+        | (((immediate >> 11) & 1) << 10);
+    let second = (((immediate >> 8) & 0x0007) << 12)
+        | (u16::from(register) << 8)
+        | (immediate & 0x00ff);
+    let first = first.to_le_bytes();
+    let second = second.to_le_bytes();
+    [first[0], first[1], second[0], second[1]]
 }
 
 fn validate_existing_sector_table(bytes: &[u8]) -> Result<(), AssetError> {
@@ -472,13 +715,26 @@ mod tests {
     }
 
     #[test]
+    fn thumb_movw_movt_immediates_round_trip() {
+        for &(base, register, immediate) in &[
+            (0xf240, 0, 0x0e12),
+            (0xf240, 1, 0x0f40),
+            (0xf240, 0, 0x3000),
+            (0xf2c0, 0, 0x0011),
+        ] {
+            let encoded = encode_thumb_mov_imm16(base, register, immediate);
+            assert_eq!(decode_thumb_mov_imm16(&encoded, base, register), Some(immediate));
+        }
+    }
+
+    #[test]
     fn vwf_runtime_range_hash_constant_matches_patcher_output() {
         assert_eq!(VWF_RUNTIME_HASH_RANGE_START_VA, 0x8100_0000);
         assert_eq!(VWF_RUNTIME_HASH_RANGE_END_VA, 0x8110_0000);
         assert_eq!(VWF_RUNTIME_HASH_RANGE_SIZE, 0x0010_0000);
         assert_eq!(
             VWF_RUNTIME_HASH_RANGE_SHA256,
-            "8eac77d2ff46522e7c428bc8231b88b8606a5dc4f2608765955266cf06666ac9"
+            "c7cc66521264acdc6d259ad189d1a6fe731901855a6708ae3a3b036334091a84"
         );
     }
 }

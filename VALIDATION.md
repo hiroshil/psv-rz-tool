@@ -142,8 +142,12 @@ EBOOT is written. The VWF input check is the SHA-256 of virtual range
 `0x81000000..0x81100000`:
 
 ```text
-8eac77d2ff46522e7c428bc8231b88b8606a5dc4f2608765955266cf06666ac9
+c7cc66521264acdc6d259ad189d1a6fe731901855a6708ae3a3b036334091a84
 ```
+
+`rz-tool build lt.bin` must require `--eboot-in`/`--eboot-out`, verify that `lt-font.json.glyph_count` equals the EBOOT runtime glyph limit, and update only the LT load-size/sector allocation constants. `extract-lt-alloc` must recover that allocation plus the runtime glyph limit for modified-LT re-extraction. `extract-sc-alloc` remains the SC-specific allocation-map command.
+
+When an EBOOT has intentionally already been changed inside the protected hash range by an LT or SC allocation build, `-f`/`--force` may bypass the hash mismatch for the next build. Force must not bypass LT glyph-count/allocation consistency checks.
 
 Representative workflow:
 

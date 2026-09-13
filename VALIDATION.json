@@ -83,10 +83,17 @@
     "rz_tool_eboot_patch_scope": [
       "sc_allocation_table",
       "sc_metadata_table",
-      "sc_runtime_buffer_size"
+      "sc_runtime_buffer_size",
+      "lt_allocation_size",
+      "lt_sector_count"
     ],
     "runtime_hash_range_va": "0x81000000..0x81100000",
-    "runtime_hash_range_sha256": "8eac77d2ff46522e7c428bc8231b88b8606a5dc4f2608765955266cf06666ac9"
+    "runtime_hash_range_sha256": "c7cc66521264acdc6d259ad189d1a6fe731901855a6708ae3a3b036334091a84",
+    "force_allows_runtime_hash_mismatch": true,
+    "allocation_extract_commands": [
+      "extract-sc-alloc",
+      "extract-lt-alloc"
+    ]
   },
   "wrap_materialization": {
     "default_row_width_px": 528,

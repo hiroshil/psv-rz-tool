@@ -51,6 +51,19 @@ pub struct LtFontDocument {
 
 pub fn decode(input: &[u8], output_directory: &Path) -> Result<String, AssetError> {
     let glyph_count = infer_glyph_count(input.len())?;
+    decode_with_glyph_count(input, output_directory, glyph_count)
+}
+
+pub fn decode_with_glyph_count(
+    input: &[u8],
+    output_directory: &Path,
+    glyph_count: usize,
+) -> Result<String, AssetError> {
+    if glyph_count < STOCK_GLYPH_COUNT {
+        return Err(AssetError::InvalidFormat(format!(
+            "lt.bin allocation map glyph_count {glyph_count:#x} is smaller than stock {STOCK_GLYPH_COUNT:#x}"
+        )));
+    }
     let glyph_data_size = glyph_count.checked_mul(GLYPH_BYTES).ok_or_else(|| {
         AssetError::InvalidFormat("lt.bin glyph data size overflows usize".to_owned())
     })?;
@@ -117,6 +130,11 @@ pub fn decode(input: &[u8], output_directory: &Path) -> Result<String, AssetErro
         serde_json::to_vec_pretty(&document)?,
     )?;
     Ok(document_name.to_owned())
+}
+
+pub fn document_glyph_count(document_path: &Path) -> Result<u32, AssetError> {
+    let document: LtFontDocument = serde_json::from_slice(&fs::read(document_path)?)?;
+    Ok(document.glyph_count)
 }
 
 pub fn encode(document_path: &Path) -> Result<Vec<u8>, AssetError> {

@@ -1476,11 +1476,10 @@ or wrap-width table, the input ELF must already match the known-good standalone
 VWF-patcher SHA-256 for virtual range `0x81000000..0x81100000`:
 
 ```text
-8eac77d2ff46522e7c428bc8231b88b8606a5dc4f2608765955266cf06666ac9
+c7cc66521264acdc6d259ad189d1a6fe731901855a6708ae3a3b036334091a84
 ```
 
-`rz-tool` then updates only SC sector allocation, SC metadata and script buffer
-sizing.
+`rz-tool` then updates only the allocation metadata owned by the active build: SC sector allocation/metadata/script-buffer sizing for `sc.cpk`, or LT load-size/sector allocation for `lt.bin`. LT runtime glyph-limit sites remain owned by the standalone VWF patcher. A deliberate `-f`/`--force` bypass applies only to the runtime-range hash mismatch when chaining allocation updates.
 
 ## Compact font.cnf contract
 

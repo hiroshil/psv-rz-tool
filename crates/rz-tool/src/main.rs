@@ -25,7 +25,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     match command {
         "extract" => extract_command(&arguments[1..]),
-        "extract-alloc" => extract_alloc_command(&arguments[1..]),
+        "extract-sc-alloc" => extract_sc_alloc_command(&arguments[1..]),
+        "extract-lt-alloc" => extract_lt_alloc_command(&arguments[1..]),
         "build" => build_command(&arguments[1..]),
         "help" | "--help" | "-h" => {
             print_usage();
@@ -92,9 +93,9 @@ fn extract_command(arguments: &[String]) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-fn extract_alloc_command(arguments: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+fn extract_sc_alloc_command(arguments: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if arguments.len() != 2 {
-        return Err("extract-alloc requires <eboot.bin.elf> <sc-allocation.json>".into());
+        return Err("extract-sc-alloc requires <eboot.bin.elf> <sc-allocation.json>".into());
     }
     let input = Path::new(&arguments[0]);
     let output = Path::new(&arguments[1]);
@@ -107,10 +108,29 @@ fn extract_alloc_command(arguments: &[String]) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
+fn extract_lt_alloc_command(arguments: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if arguments.len() != 2 {
+        return Err("extract-lt-alloc requires <eboot.bin.elf> <lt-allocation.json>".into());
+    }
+    let input = Path::new(&arguments[0]);
+    let output = Path::new(&arguments[1]);
+    if output.exists() {
+        return Err(format!("output already exists: {}", output.display()).into());
+    }
+    let map = eboot::extract_lt_allocation_map(input)?;
+    std::fs::write(output, serde_json::to_vec_pretty(&map)?)?;
+    println!(
+        "wrote LT allocation map: glyph_count={:#x}, allocation={:#x}, sectors={:#x}",
+        map.glyph_count, map.allocation_size, map.sector_count
+    );
+    Ok(())
+}
+
 fn build_command(arguments: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut positional = Vec::<String>::new();
     let mut eboot_in = None::<PathBuf>;
     let mut eboot_out = None::<PathBuf>;
+    let mut force = false;
     let mut charset_map = None::<PathBuf>;
     let mut wrap_width_px = None::<u32>;
     let mut wrap_width_table = None::<PathBuf>;
@@ -119,6 +139,12 @@ fn build_command(arguments: &[String]) -> Result<(), Box<dyn std::error::Error>>
     let mut index = 0usize;
     while index < arguments.len() {
         match arguments[index].as_str() {
+            "-f" | "--force" => {
+                if force {
+                    return Err("-f/--force was provided more than once".into());
+                }
+                force = true;
+            }
             "--eboot-in" => {
                 index += 1;
                 let value = arguments.get(index).ok_or("--eboot-in requires a path")?;
@@ -195,6 +221,7 @@ fn build_command(arguments: &[String]) -> Result<(), Box<dyn std::error::Error>>
     let options = BuildOptions {
         eboot_in,
         eboot_out,
+        force,
         charset_map,
         wrap_width_px,
         wrap_width_table,
@@ -211,6 +238,18 @@ fn build_command(arguments: &[String]) -> Result<(), Box<dyn std::error::Error>>
             "patched eboot: SC buffer {:#x}, total SC sectors {}, changed={}",
             patch.script_buffer_size, patch.total_sectors, patch.changed
         );
+        if patch.forced_runtime_hash_mismatch {
+            eprintln!("warning: -f/--force bypassed VWF_RUNTIME_HASH_RANGE_SHA256 mismatch for SC EBOOT patching");
+        }
+    }
+    if let Some(patch) = report.lt_eboot_patch {
+        println!(
+            "patched eboot: LT glyph_count {:#x}, allocation {:#x}, sectors {:#x}, changed={}",
+            patch.glyph_count, patch.allocation_size, patch.sector_count, patch.changed
+        );
+        if patch.forced_runtime_hash_mismatch {
+            eprintln!("warning: -f/--force bypassed VWF_RUNTIME_HASH_RANGE_SHA256 mismatch for LT EBOOT patching");
+        }
     }
     Ok(())
 }
@@ -222,12 +261,15 @@ fn print_usage() {
 
 Usage:
   rz-tool extract <input.cpk|lt.bin> <project-directory>
-  rz-tool extract-alloc <eboot.bin.elf> <sc-allocation.json>
+  rz-tool extract-sc-alloc <patched_eboot.elf> <sc-allocation.json>
+  rz-tool extract-lt-alloc <patched_eboot.elf> <lt-allocation.json>
   rz-tool extract <sc.cpk> <project-directory> [--charset-map <font.tbl|charset.json>] [--allocation-map <sc-allocation.json>] [--debug-script-ir]
+  rz-tool extract <lt.bin> <project-directory> [--allocation-map <lt-allocation.json>]
   rz-tool extract <input.cpk|lt.bin|pr.bin> <project-directory> --raw-only
-  rz-tool build <project-directory> <output.cpk|lt.bin|pr.bin>
+  rz-tool build <project-directory> <output.cpk|pr.bin>
+  rz-tool build <lt-project> <lt.bin> --eboot-in <vwf-patched-eboot.elf> --eboot-out <patched_eboot.elf> [-f]
   rz-tool build <sc-project> <output.cpk> [--charset-map <charset.json>] [--wrap-width-table <font.cnf|json>] [--wrap-width-px <px>] [--wrap-mode <word|legacy>] [--wrap-rows <n>]
-  rz-tool build <sc-project> <output.cpk> --eboot-in <vwf-patched-eboot.bin.elf> --eboot-out <patched.bin.elf> [--charset-map <font.tbl|charset.json>] [--wrap-width-table <font.cnf|json>] [--wrap-width-px <px>] [--wrap-mode <word|legacy>] [--wrap-rows <n>]
+  rz-tool build <sc-project> <output.cpk> --eboot-in <vwf-patched-eboot.bin.elf> --eboot-out <patched.bin.elf> [-f] [--charset-map <font.tbl|charset.json>] [--wrap-width-table <font.cnf|json>] [--wrap-width-px <px>] [--wrap-mode <word|legacy>] [--wrap-rows <n>]
 
 Editable mode understands the engine image-package grammar used by
 addpt/bk/bsf/pt, compiled scene-script payloads in sc.cpk, and the lt.bin 4-bpp
@@ -238,8 +280,10 @@ one complete editable `text` field. Wrapping is performed silently during build.
 JSON) used for the VWF ELF width table. When `--charset-map` or
 `--wrap-width-table` is used together with `--eboot-in/--eboot-out`, the
 input ELF must already be patched by the standalone VWF patcher and must match
-the known VWF runtime SHA-256 over VA range 0x81000000..0x81100000; rz-tool only
-patches the SC allocation/metadata tables and runtime buffer size.
+the known VWF runtime SHA-256 over VA range 0x81000000..0x81100000. `-f`/`--force`
+may bypass only that hash mismatch when intentionally chaining EBOOT allocation updates.
+SC builds patch SC allocation/metadata plus runtime buffer size; LT builds patch LT
+allocation size/sector count. The standalone VWF patcher owns LT runtime glyph limits.
 `--wrap-width-px`
 overrides the default 528px physical row limit; when omitted, rz-tool uses
 528px per row. A runtime dialogue screen holds three physical rows by default
